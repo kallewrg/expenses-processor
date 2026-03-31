@@ -29,7 +29,7 @@ if st.button("Enviar para o n8n"):
             })
 
         # Envia para o n8n
-        url_n8n = "http://localhost:5678/webhook-test/af02e739-1308-4989-9475-5fcb161b9e6e"  # ← TROQUE AQUI
+        url_n8n = "https://n8n-production-9e43.up.railway.app/webhook-test/expenses"  # ← TROQUE AQUI
 
         resposta = requests.post(url_n8n, json={"imagens": lista_imagens})
 
