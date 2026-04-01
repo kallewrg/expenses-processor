@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import requests
 import base64
@@ -29,7 +30,11 @@ if st.button("Enviar para o n8n"):
             })
 
         # Envia para o n8n
-        url_n8n = "https://n8n-production-9e43.up.railway.app/webhook/expenses"  # ← TROQUE AQUI
+        url_n8n = os.environ.get("N8N_WEBHOOK_URL")  # ← TROQUE AQUI
+
+        if not webhook_url:
+        st.error("Variável de ambiente N8N_WEBHOOK_URL não configurada.")
+        st.stop()
 
         resposta = requests.post(url_n8n, json={"imagens": lista_imagens})
 
