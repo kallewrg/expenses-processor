@@ -13,7 +13,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -240,6 +240,20 @@ with aba_grafico:
             st.write(f"**Linhas lidas do Sheets:** {len(registros)}")
             st.write(f"**Fatura atual:** {NOMES_MESES[fatura_atual[1]-1]}/{fatura_atual[0]}")
 
+            # Amostra dos 5 primeiros valores brutos para diagnóstico
+            st.write("**Amostra de valores brutos do Sheets (primeiras 5 linhas):**")
+            amostra = []
+            for linha in registros[:5]:
+                valor_raw = linha.get(COL_VALOR, "N/A")
+                amostra.append({
+                    "Descrição":    str(linha.get(COL_DESCRICAO, ""))[:30],
+                    "valor_raw":    repr(valor_raw),
+                    "tipo":         type(valor_raw).__name__,
+                    "parse_result": parse_valor(valor_raw),
+                })
+            import pandas as pd
+            st.dataframe(pd.DataFrame(amostra), use_container_width=True, hide_index=True)
+
             debug_rows = []
             for linha in registros:
                 data_str  = str(linha.get(COL_DATA, "")).strip()
@@ -265,7 +279,6 @@ with aba_grafico:
                 except Exception:
                     pass
 
-            import pandas as pd
             df = pd.DataFrame(debug_rows)
             if not df.empty:
                 st.write(f"**Total de lançamentos futuros projetados:** {len(df)}")
