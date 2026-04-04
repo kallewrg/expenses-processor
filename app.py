@@ -76,13 +76,21 @@ def avancar_mes(ano: int, mes: int, quantidade: int) -> tuple[int, int]:
 
 
 def parse_valor(valor_str) -> float:
-    """Converte string de valor (vírgula decimal) para float.
-    Quando o gspread retorna o valor já como número, usa diretamente.
+    """Converte valor para float, cobrindo todos os formatos possíveis:
+    - float/int Python (retornado diretamente)
+    - string com ponto decimal (ex: "44.2" — formato gspread)
+    - string com vírgula decimal (ex: "44,2" — formato BR)
+    - string com separador de milhar BR (ex: "1.234,56")
+    - string com prefixo "R$"
     """
     if isinstance(valor_str, (int, float)):
         return float(valor_str)
     try:
-        cleaned = str(valor_str).replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
+        cleaned = str(valor_str).replace("R$", "").replace(" ", "").strip()
+        # Com vírgula: formato BR — remove pontos de milhar, troca vírgula por ponto
+        if "," in cleaned:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        # Sem vírgula: ponto já é separador decimal (padrão gspread)
         return float(cleaned)
     except (ValueError, TypeError):
         return 0.0
