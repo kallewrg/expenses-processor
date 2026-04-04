@@ -187,13 +187,29 @@ with aba_grafico:
             st.plotly_chart(fig, use_container_width=True)
 
             # Cards de resumo abaixo do gráfico
-            colunas = st.columns(len(faturas_ordenadas))
-            for i, (ano, mes) in enumerate(faturas_ordenadas):
+            cards = []
+
+            # 1. Fatura em aberto e a próxima
+            for fat in faturas_ordenadas[:2]:
+                ano_c, mes_c = fat
+                rotulo = f"{NOMES_MESES[mes_c - 1]}/{ano_c}"
+                if fat == fatura_atual:
+                    rotulo += " (aberta)"
+                cards.append((rotulo, totais[fat]))
+
+            # 2-4. Primeira fatura abaixo de cada limiar (a partir da 3ª em diante)
+            for limiar in [1000, 500, 100]:
+                for fat in faturas_ordenadas[2:]:
+                    if totais[fat] < limiar:
+                        ano_c, mes_c = fat
+                        rotulo = f"< R${limiar} em {NOMES_MESES[mes_c - 1]}/{ano_c}"
+                        cards.append((rotulo, totais[fat]))
+                        break  # só o primeiro que cruza o limiar
+
+            colunas = st.columns(len(cards))
+            for i, (rotulo, valor) in enumerate(cards):
                 with colunas[i]:
-                    rotulo = f"{NOMES_MESES[mes - 1]}/{ano}"
-                    if (ano, mes) == fatura_atual:
-                        rotulo += " (aberta)"
-                    st.metric(rotulo, formatar_brl(totais[(ano, mes)]))
+                    st.metric(rotulo, formatar_brl(valor))
 
     except Exception as e:
         st.error(f"Erro ao carregar dados da planilha: {e}")
