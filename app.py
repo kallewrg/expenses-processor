@@ -76,9 +76,14 @@ def avancar_mes(ano: int, mes: int, quantidade: int) -> tuple[int, int]:
 
 
 def parse_valor(valor_str) -> float:
-    """Converte string de valor (vírgula decimal) para float."""
+    """Converte string de valor (vírgula decimal) para float.
+    Quando o gspread retorna o valor já como número, usa diretamente.
+    """
+    if isinstance(valor_str, (int, float)):
+        return float(valor_str)
     try:
-        return float(str(valor_str).replace(".", "").replace(",", "."))
+        cleaned = str(valor_str).replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
+        return float(cleaned)
     except (ValueError, TypeError):
         return 0.0
 
@@ -142,36 +147,6 @@ with aba_grafico:
     try:
         registros = carregar_dados()
         totais, fatura_atual = calcular_totais_por_fatura(registros)
-
-        # ── DEBUG TEMPORÁRIO ──────────────────────────────────────────────────
-        with st.expander("🔍 Debug — lançamentos que compõem Maio/2026"):
-            st.write(f"**Total de linhas lidas do Sheets:** {len(registros)}")
-            st.write(f"**Fatura atual calculada:** {fatura_atual}")
-            maio = (2026, 5)
-            contrib_maio = []
-            for linha in registros:
-                data_str  = str(linha.get(COL_DATA, '')).strip()
-                valor_str = linha.get(COL_VALOR, '0')
-                parcelas  = linha.get(COL_PARCELAS, 1)
-                desc      = linha.get(COL_DESCRICAO, '')
-                try:
-                    partes = data_str.split("/")
-                    dc = date(int(partes[2]), int(partes[1]), int(partes[0]))
-                    tp = int(parcelas)
-                    pf = fatura_da_compra(dc)
-                    for i in range(tp):
-                        ano_f, mes_f = avancar_mes(pf[0], pf[1], i)
-                        if (ano_f, mes_f) == maio:
-                            contrib_maio.append({
-                                "data": data_str, "desc": desc,
-                                "valor_raw": valor_str, "parcelas": tp,
-                                "parcela_n": i+1, "1a_fatura": pf
-                            })
-                except:
-                    pass
-            st.write(f"**Lançamentos que contribuem para Maio:** {len(contrib_maio)}")
-            st.dataframe(contrib_maio)
-        # ── FIM DEBUG ─────────────────────────────────────────────────────────
 
         if not totais:
             st.info("Nenhum lançamento futuro encontrado na planilha.")
