@@ -13,7 +13,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -50,7 +50,7 @@ def carregar_dados():
         st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
         st.stop()
     sheet = client.open_by_key(sheet_id).sheet1
-    return sheet.get_all_records(value_render_option='UNFORMATTED_VALUE')
+    return sheet.get_all_records(numericise_ignore=['all'])
 
 
 # ─── Lógica de negócio ───────────────────────────────────────────────────────
