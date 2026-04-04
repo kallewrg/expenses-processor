@@ -216,6 +216,48 @@ with aba_grafico:
                 with colunas[i]:
                     st.metric(rotulo, formatar_brl(valor))
 
+        # ── Debug ────────────────────────────────────────────────────────────
+        with st.expander("🔍 Debug — lançamentos por fatura"):
+            st.write(f"**Linhas lidas do Sheets:** {len(registros)}")
+            st.write(f"**Fatura atual:** {NOMES_MESES[fatura_atual[1]-1]}/{fatura_atual[0]}")
+
+            debug_rows = []
+            for linha in registros:
+                data_str  = str(linha.get(COL_DATA, "")).strip()
+                valor_raw = linha.get(COL_VALOR, "0")
+                parcelas  = linha.get(COL_PARCELAS, 1)
+                desc      = str(linha.get(COL_DESCRICAO, ""))
+                try:
+                    partes = data_str.split("/")
+                    dc = date(int(partes[2]), int(partes[1]), int(partes[0]))
+                    tp = int(parcelas)
+                    valor = parse_valor(valor_raw)
+                    pf = fatura_da_compra(dc)
+                    for i in range(tp):
+                        ano_f, mes_f = avancar_mes(pf[0], pf[1], i)
+                        if (ano_f, mes_f) >= fatura_atual:
+                            debug_rows.append({
+                                "Fatura":      f"{NOMES_MESES[mes_f-1]}/{ano_f}",
+                                "Data compra": data_str,
+                                "Descrição":   desc[:40],
+                                "Valor (R$)":  valor,
+                                "Parcela":     f"{i+1}/{tp}",
+                            })
+                except Exception:
+                    pass
+
+            import pandas as pd
+            df = pd.DataFrame(debug_rows)
+            if not df.empty:
+                st.write(f"**Total de lançamentos futuros projetados:** {len(df)}")
+                st.dataframe(
+                    df.sort_values(["Fatura", "Data compra"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("Nenhum lançamento futuro encontrado.")
+
     except Exception as e:
         st.error(f"Erro ao carregar dados da planilha: {e}")
 
