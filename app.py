@@ -1,45 +1,246 @@
 import os
-import streamlit as st
-import requests
+import json
 import base64
+import requests
+import gspread
+import streamlit as st
+import plotly.graph_objects as go
+from datetime import date, timedelta
+from google.oauth2.service_account import Credentials
+from collections import defaultdict
 
-st.title("Enviar imagens para o n8n")
+# ─── Configuração da página ──────────────────────────────────────────────────
+st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
-# Campo para escolher as imagens
-imagens = st.file_uploader(
-    "Escolha uma ou mais imagens",
-    type=["jpg", "jpeg", "png"],
-    accept_multiple_files=True
-)
+# ─── Constantes ─────────────────────────────────────────────────────────────
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+NOMES_MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+               "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-# Botão de envio
-if st.button("Enviar para o n8n"):
+# Nomes exatos das colunas na planilha
+COL_DATA      = "Data da compra"
+COL_DESCRICAO = "Descrição do gasto"
+COL_VALOR     = "Valor do gasto/parcela"
+COL_PARCELAS  = "Quantidade de parcelas [Parcelas]"
 
-    if not imagens:
-        st.warning("Selecione pelo menos uma imagem antes de enviar.")
-    else:
-        # Monta a lista de imagens em formato que o n8n entende
-        lista_imagens = []
-        for img in imagens:
-            conteudo = img.read()
-            imagem_base64 = base64.b64encode(conteudo).decode("utf-8")
-            lista_imagens.append({
-                "nome": img.name,
-                "tipo": img.type,
-                "dados": imagem_base64
-            })
 
-        # Envia para o n8n
-        url_n8n = os.environ.get("N8N_WEBHOOK_URL")  # ← TROQUE AQUI
-
-        if not webhook_url:
-        st.error("Variável de ambiente N8N_WEBHOOK_URL não configurada.")
+# ─── Google Sheets ───────────────────────────────────────────────────────────
+@st.cache_resource
+def get_gspread_client():
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if not creds_json:
+        st.error("Variável de ambiente GOOGLE_CREDENTIALS não configurada.")
         st.stop()
+    creds_dict = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
 
-        resposta = requests.post(url_n8n, json={"imagens": lista_imagens})
 
-        if resposta.status_code == 200:
-            st.success("Imagens enviadas com sucesso!")
-            st.json(resposta.json())  # Mostra o retorno do n8n
+@st.cache_data(ttl=300)  # atualiza a cada 5 minutos
+def carregar_dados():
+    client = get_gspread_client()
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
+        st.stop()
+    sheet = client.open_by_key(sheet_id).sheet1
+    return sheet.get_all_records()
+
+
+# ─── Lógica de negócio ───────────────────────────────────────────────────────
+def fatura_da_compra(data_compra: date) -> tuple[int, int]:
+    """
+    Retorna (ano, mês) da fatura em que uma compra será lançada.
+
+    Regra: fechamento = vencimento - 7 dias | vencimento = dia 4 de cada mês
+    Algoritmo: data_compra + 7 dias → se dia >= 4, avança um mês.
+    O dia do fechamento já pertence ao ciclo da fatura seguinte.
+    """
+    deslocada = data_compra + timedelta(days=7)
+    ano, mes = deslocada.year, deslocada.month
+    if deslocada.day >= 4:
+        mes += 1
+        if mes > 12:
+            mes = 1
+            ano += 1
+    return ano, mes
+
+
+def avancar_mes(ano: int, mes: int, quantidade: int) -> tuple[int, int]:
+    """Avança N meses a partir de (ano, mes)."""
+    mes_total = mes - 1 + quantidade
+    return ano + mes_total // 12, mes_total % 12 + 1
+
+
+def parse_valor(valor_str) -> float:
+    """Converte string de valor (vírgula decimal) para float."""
+    try:
+        return float(str(valor_str).replace(".", "").replace(",", "."))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def calcular_totais_por_fatura(registros: list) -> dict:
+    """
+    Retorna um dicionário {(ano, mes): total_R$} com a fatura em aberto
+    e todas as futuras que têm algum valor.
+    """
+    hoje = date.today()
+    fatura_atual = fatura_da_compra(hoje)
+    totais = defaultdict(float)
+
+    for linha in registros:
+        data_str   = str(linha.get(COL_DATA, "")).strip()
+        valor_str  = linha.get(COL_VALOR, "0")
+        parcelas   = linha.get(COL_PARCELAS, 1)
+
+        if not data_str:
+            continue
+
+        try:
+            partes = data_str.split("/")
+            data_compra = date(int(partes[2]), int(partes[1]), int(partes[0]))
+        except (ValueError, IndexError):
+            continue
+
+        try:
+            total_parcelas = int(parcelas)
+        except (ValueError, TypeError):
+            total_parcelas = 1
+
+        valor = parse_valor(valor_str)
+        primeira_fatura = fatura_da_compra(data_compra)
+
+        for i in range(total_parcelas):
+            ano_fat, mes_fat = avancar_mes(primeira_fatura[0], primeira_fatura[1], i)
+
+            # Só inclui faturas a partir da atual (em aberto e futuras)
+            if (ano_fat, mes_fat) >= fatura_atual:
+                totais[(ano_fat, mes_fat)] += valor
+
+    return dict(totais), fatura_atual
+
+
+# ─── Interface ───────────────────────────────────────────────────────────────
+st.title("💳 Gestão de Fatura")
+
+aba_grafico, aba_upload = st.tabs(["📊 Visão Geral", "📤 Enviar Fatura"])
+
+# ── Aba: Gráfico ──────────────────────────────────────────────────────────────
+with aba_grafico:
+    col_titulo, col_botao = st.columns([6, 1])
+    with col_titulo:
+        st.subheader("Faturas em aberto e futuras")
+    with col_botao:
+        if st.button("🔄 Atualizar", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    try:
+        registros = carregar_dados()
+        totais, fatura_atual = calcular_totais_por_fatura(registros)
+
+        if not totais:
+            st.info("Nenhum lançamento futuro encontrado na planilha.")
         else:
-            st.error(f"Erro ao enviar: {resposta.status_code}")
+            faturas_ordenadas = sorted(totais.keys())
+
+            labels  = []
+            valores = []
+            cores   = []
+
+            for (ano, mes) in faturas_ordenadas:
+                nome = f"{NOMES_MESES[mes - 1]}/{str(ano)[-2:]}"
+                if (ano, mes) == fatura_atual:
+                    nome += " ●"          # marcador visual de fatura aberta
+                    cores.append("#E05C5C")
+                else:
+                    cores.append("#4A90D9")
+                labels.append(nome)
+                valores.append(round(totais[(ano, mes)], 2))
+
+            def formatar_brl(v: float) -> str:
+                return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+            fig = go.Figure(go.Bar(
+                x=labels,
+                y=valores,
+                marker_color=cores,
+                text=[formatar_brl(v) for v in valores],
+                textposition="outside",
+                hovertemplate="%{x}<br>%{text}<extra></extra>",
+            ))
+
+            fig.update_layout(
+                yaxis_title="Valor (R$)",
+                yaxis=dict(tickformat=",.0f"),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                showlegend=False,
+                height=420,
+                margin=dict(t=40, b=20),
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Cards de resumo abaixo do gráfico
+            colunas = st.columns(len(faturas_ordenadas))
+            for i, (ano, mes) in enumerate(faturas_ordenadas):
+                with colunas[i]:
+                    rotulo = f"{NOMES_MESES[mes - 1]}/{ano}"
+                    if (ano, mes) == fatura_atual:
+                        rotulo += " (aberta)"
+                    st.metric(rotulo, formatar_brl(totais[(ano, mes)]))
+
+    except Exception as e:
+        st.error(f"Erro ao carregar dados da planilha: {e}")
+
+
+# ── Aba: Upload ───────────────────────────────────────────────────────────────
+with aba_upload:
+    st.subheader("Enviar prints da fatura para processamento")
+
+    imagens = st.file_uploader(
+        "Escolha uma ou mais imagens",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+    )
+
+    if st.button("Enviar para o n8n", type="primary"):
+        if not imagens:
+            st.warning("Selecione pelo menos uma imagem antes de enviar.")
+        else:
+            url_n8n = os.environ.get("N8N_WEBHOOK_URL")
+            if not url_n8n:
+                st.error("Variável de ambiente N8N_WEBHOOK_URL não configurada.")
+                st.stop()
+
+            lista_imagens = []
+            for img in imagens:
+                conteudo = img.read()
+                imagem_b64 = base64.b64encode(conteudo).decode("utf-8")
+                lista_imagens.append({
+                    "nome": img.name,
+                    "tipo": img.type,
+                    "dados": imagem_b64,
+                })
+
+            with st.spinner("Enviando imagens..."):
+                try:
+                    resposta = requests.post(
+                        url_n8n,
+                        json={"imagens": lista_imagens},
+                        timeout=60,
+                    )
+                    if resposta.status_code == 200:
+                        st.success("✅ Imagens enviadas com sucesso!")
+                        st.json(resposta.json())
+                    else:
+                        st.error(f"Erro ao enviar: HTTP {resposta.status_code}")
+                except requests.exceptions.Timeout:
+                    st.error("Tempo de resposta excedido. Verifique se o n8n está ativo.")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Erro de conexão: {e}")
