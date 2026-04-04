@@ -87,10 +87,8 @@ def parse_valor(valor_str) -> float:
         return float(valor_str)
     try:
         cleaned = str(valor_str).replace("R$", "").replace(" ", "").strip()
-        # Com vírgula: formato BR — remove pontos de milhar, troca vírgula por ponto
         if "," in cleaned:
             cleaned = cleaned.replace(".", "").replace(",", ".")
-        # Sem vírgula: ponto já é separador decimal (padrão gspread)
         return float(cleaned)
     except (ValueError, TypeError):
         return 0.0
