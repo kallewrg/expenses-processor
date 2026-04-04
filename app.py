@@ -12,6 +12,9 @@ from collections import defaultdict
 # ─── Configuração da página ──────────────────────────────────────────────────
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
+# ─── Versão ─────────────────────────────────────────────────────────────────
+APP_VERSION = "1.3.0"
+
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -87,8 +90,10 @@ def parse_valor(valor_str) -> float:
         return float(valor_str)
     try:
         cleaned = str(valor_str).replace("R$", "").replace(" ", "").strip()
+        # Com vírgula: formato BR — remove pontos de milhar, troca vírgula por ponto
         if "," in cleaned:
             cleaned = cleaned.replace(".", "").replace(",", ".")
+        # Sem vírgula: ponto já é separador decimal (padrão gspread)
         return float(cleaned)
     except (ValueError, TypeError):
         return 0.0
@@ -136,7 +141,15 @@ def calcular_totais_por_fatura(registros: list) -> dict:
 
 
 # ─── Interface ───────────────────────────────────────────────────────────────
-st.title("💳 Gestão de Fatura")
+col_title, col_version = st.columns([5, 1])
+with col_title:
+    st.title("💳 Gestão de Fatura")
+with col_version:
+    st.markdown(
+        f"<div style='text-align:right; padding-top:18px; color:gray; font-size:13px;'>"
+        f"v{APP_VERSION}</div>",
+        unsafe_allow_html=True,
+    )
 
 aba_grafico, aba_upload = st.tabs(["📊 Visão Geral", "📤 Enviar Fatura"])
 
