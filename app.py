@@ -13,7 +13,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -324,9 +324,11 @@ with aba_upload:
                 conteudo = img.read()
                 imagem_b64 = base64.b64encode(conteudo).decode("utf-8")
                 payload = {
-                    "nome": img.name,
-                    "tipo": img.type,
-                    "dados": imagem_b64,
+                    "imagens": [{
+                        "nome": img.name,
+                        "tipo": img.type,
+                        "dados": imagem_b64,
+                    }]
                 }
                 try:
                     resposta = requests.post(url_n8n, json=payload, timeout=60)
