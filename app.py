@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.3"
+APP_VERSION = "1.9.4"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -57,8 +57,12 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 
+@st.cache_resource
 def _get_planilha():
-    """Abre a planilha uma única vez. Usado pelas funções de escrita."""
+    """
+    Abre a planilha e armazena o objeto por toda a sessão (cache_resource).
+    Evita chamar open_by_key() a cada operação de escrita.
+    """
     client = get_gspread_client()
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     if not sheet_id:
@@ -493,8 +497,6 @@ if "classificando_id" not in st.session_state:
     st.session_state.classificando_id = None
 if "ausentes_ignoradas" not in st.session_state:
     st.session_state.ausentes_ignoradas = set()
-if "param_save_msg" not in st.session_state:
-    st.session_state.param_save_msg = None
 
 col_title, col_version = st.columns([5, 1])
 with col_title:
@@ -871,15 +873,6 @@ with aba_parametros:
 
         salvar = st.form_submit_button("💾 Salvar alterações", type="primary")
 
-    # Exibe mensagem persistida do rerun anterior
-    if st.session_state.param_save_msg:
-        tipo, msg = st.session_state.param_save_msg
-        if tipo == "success":
-            st.success(msg)
-        else:
-            st.info(msg)
-        st.session_state.param_save_msg = None
-
     if salvar:
         # data_vigencia para renda = 1º do mês seguinte
         proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
@@ -913,10 +906,9 @@ with aba_parametros:
             )
 
         if alteracoes:
-            st.session_state.param_save_msg = ("success", "✅ Parâmetros salvos:\n\n" + "\n\n".join(f"- {a}" for a in alteracoes))
+            st.success("✅ Parâmetros salvos:\n\n" + "\n\n".join(f"- {a}" for a in alteracoes))
         else:
-            st.session_state.param_save_msg = ("info", "Nenhuma alteração detectada.")
-        st.rerun()
+            st.info("Nenhuma alteração detectada.")
 
     # Resumo dos valores vigentes
     st.divider()
