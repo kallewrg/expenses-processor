@@ -38,6 +38,12 @@ COLUNAS_ASSINATURAS = [
     "status", "data_inicio", "data_ultimo_lancamento", "data_cancelamento",
 ]
 
+# Aba e nomes de parâmetros
+ABA_PARAMETROS = "Parametros"
+PARAM_RENDA            = "renda_mensal_liquida"
+PARAM_LIMITE_GASTOS    = "limite_gastos_pct"
+PARAM_LIMITE_PARCELADOS = "limite_parcelados_pct"
+
 
 # ─── Google Sheets ───────────────────────────────────────────────────────────
 @st.cache_resource
@@ -94,6 +100,75 @@ def salvar_assinatura(assinatura: dict) -> None:
     linha = [assinatura.get(col, "") for col in COLUNAS_ASSINATURAS]
     ws.append_row(linha, value_input_option="USER_ENTERED")
     st.cache_data.clear()
+
+
+def _get_ws_parametros():
+    """Retorna o worksheet da aba Parametros (sem cache — usada por escrita)."""
+    client = get_gspread_client()
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
+        st.stop()
+    return client.open_by_key(sheet_id).worksheet(ABA_PARAMETROS)
+
+
+@st.cache_data(ttl=300)
+def carregar_parametros() -> list[dict]:
+    """
+    Lê todas as linhas da aba Parametros.
+    Cada linha tem: parametro | valor | data_vigencia (dd/mm/yyyy).
+    Retorna lista vazia em caso de erro ou aba inexistente.
+    """
+    try:
+        ws = _get_ws_parametros()
+        return ws.get_all_records(numericise_ignore=['all'])
+    except Exception:
+        return []
+
+
+def salvar_parametro(parametro: str, valor: float, data_vigencia: date) -> None:
+    """
+    Adiciona uma nova linha na aba Parametros (histórico preservado).
+    data_vigencia define a partir de qual mês o valor é válido.
+    """
+    ws = _get_ws_parametros()
+    ws.append_row(
+        [parametro, str(valor), data_vigencia.strftime("%d/%m/%Y")],
+        value_input_option="USER_ENTERED",
+    )
+    st.cache_data.clear()
+
+
+def get_valor_parametro(
+    parametros: list[dict],
+    tipo: str,
+    ano: int,
+    mes: int,
+) -> float | None:
+    """
+    Retorna o valor mais recente do parâmetro `tipo` que seja vigente em (ano, mes).
+    "Vigente" = data_vigencia <= primeiro dia de (ano, mes).
+    Retorna None se não houver nenhum registro aplicável.
+    """
+    primeiro_dia_mes = date(ano, mes, 1)
+    melhor_valor     = None
+    melhor_data      = None
+
+    for linha in parametros:
+        if str(linha.get("parametro", "")).strip() != tipo:
+            continue
+        data_str = str(linha.get("data_vigencia", "")).strip()
+        try:
+            p = data_str.split("/")
+            data_vig = date(int(p[2]), int(p[1]), int(p[0]))
+        except (ValueError, IndexError):
+            continue
+        if data_vig <= primeiro_dia_mes:
+            if melhor_data is None or data_vig > melhor_data:
+                melhor_data  = data_vig
+                melhor_valor = parse_valor(linha.get("valor", "0"))
+
+    return melhor_valor
 
 
 def atualizar_assinatura(id_assinatura: str, campos: dict) -> None:
