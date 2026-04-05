@@ -592,7 +592,7 @@ with aba_assinaturas:
             dia   = candidato["dia_do_mes"]
             n_oc  = len({(d.year, d.month) for d in candidato["ocorrencias"]})
 
-            with st.container(border=True):
+            with st.container():
                 col_info, col_acoes = st.columns([3, 2])
                 with col_info:
                     st.markdown(f"**{desc}**")
@@ -649,6 +649,7 @@ with aba_assinaturas:
                                     "data_cancelamento":      "",
                                 })
                                 st.rerun()
+            st.divider()
     else:
         st.success("✅ Nenhum novo candidato a assinatura detectado.")
 
@@ -665,7 +666,7 @@ with aba_assinaturas:
             val  = str(assinatura.get("valor", ""))
             dia  = str(assinatura.get("dia_do_mes", ""))
 
-            with st.container(border=True):
+            with st.container():
                 col_info, col_acoes = st.columns([3, 2])
                 with col_info:
                     st.markdown(f"**{desc}**")
@@ -683,6 +684,7 @@ with aba_assinaturas:
                         if st.button("Não, ativa", key=f"ativa_{aid}"):
                             st.session_state.ausentes_ignoradas.add(aid)
                             st.rerun()
+            st.divider()
 
     st.divider()
 
@@ -700,7 +702,7 @@ with aba_assinaturas:
             per  = int(assinatura.get("periodicidade_meses", 1) or 1)
             ult  = str(assinatura.get("data_ultimo_lancamento", ""))
 
-            with st.container(border=True):
+            with st.container():
                 col_info, col_btn = st.columns([4, 1])
                 with col_info:
                     st.markdown(f"**{desc}**")
@@ -715,6 +717,7 @@ with aba_assinaturas:
                             "data_cancelamento": date.today().strftime("%d/%m/%Y"),
                         })
                         st.rerun()
+            st.divider()
     else:
         st.info("Nenhuma assinatura ativa cadastrada.")
 
