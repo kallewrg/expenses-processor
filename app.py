@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -57,35 +57,45 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 
-@st.cache_data(ttl=300)  # atualiza a cada 5 minutos
-def carregar_dados():
+def _get_planilha():
+    """Abre a planilha uma única vez. Usado pelas funções de escrita."""
     client = get_gspread_client()
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     if not sheet_id:
         st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
         st.stop()
-    sheet = client.open_by_key(sheet_id).sheet1
-    return sheet.get_all_records(numericise_ignore=['all'])
-
-
-def _get_ws_assinaturas():
-    """Retorna o objeto worksheet da aba Assinaturas (sem cache — usada por escrita)."""
-    client = get_gspread_client()
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
-    if not sheet_id:
-        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
-        st.stop()
-    return client.open_by_key(sheet_id).worksheet(ABA_ASSINATURAS)
+    return client.open_by_key(sheet_id)
 
 
 @st.cache_data(ttl=300)
-def carregar_assinaturas() -> list[dict]:
-    """Lê todas as linhas da aba Assinaturas. Retorna lista vazia em caso de erro."""
+def _carregar_planilha_completa() -> tuple[list, list, list]:
+    """
+    Lê as três abas em uma única abertura da planilha (1 cota de API).
+    Retorna (lancamentos, assinaturas, parametros).
+    """
+    planilha = _get_planilha()
+    lancamentos = planilha.sheet1.get_all_records(numericise_ignore=['all'])
     try:
-        ws = _get_ws_assinaturas()
-        return ws.get_all_records(numericise_ignore=['all'])
+        assinaturas = planilha.worksheet(ABA_ASSINATURAS).get_all_records(numericise_ignore=['all'])
     except Exception:
-        return []
+        assinaturas = []
+    try:
+        parametros = planilha.worksheet(ABA_PARAMETROS).get_all_records(numericise_ignore=['all'])
+    except Exception:
+        parametros = []
+    return lancamentos, assinaturas, parametros
+
+
+def carregar_dados() -> list:
+    return _carregar_planilha_completa()[0]
+
+
+def carregar_assinaturas() -> list:
+    return _carregar_planilha_completa()[1]
+
+
+def carregar_parametros() -> list:
+    return _carregar_planilha_completa()[2]
 
 
 def gerar_id_assinatura(descricao: str, valor: str, dia_do_mes: int) -> str:
@@ -96,34 +106,10 @@ def gerar_id_assinatura(descricao: str, valor: str, dia_do_mes: int) -> str:
 
 def salvar_assinatura(assinatura: dict) -> None:
     """Adiciona uma nova assinatura na aba. Limpa o cache após escrita."""
-    ws = _get_ws_assinaturas()
+    ws = _get_planilha().worksheet(ABA_ASSINATURAS)
     linha = [assinatura.get(col, "") for col in COLUNAS_ASSINATURAS]
     ws.append_row(linha, value_input_option="USER_ENTERED")
     st.cache_data.clear()
-
-
-def _get_ws_parametros():
-    """Retorna o worksheet da aba Parametros (sem cache — usada por escrita)."""
-    client = get_gspread_client()
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
-    if not sheet_id:
-        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
-        st.stop()
-    return client.open_by_key(sheet_id).worksheet(ABA_PARAMETROS)
-
-
-@st.cache_data(ttl=300)
-def carregar_parametros() -> list[dict]:
-    """
-    Lê todas as linhas da aba Parametros.
-    Cada linha tem: parametro | valor | data_vigencia (dd/mm/yyyy).
-    Retorna lista vazia em caso de erro ou aba inexistente.
-    """
-    try:
-        ws = _get_ws_parametros()
-        return ws.get_all_records(numericise_ignore=['all'])
-    except Exception:
-        return []
 
 
 def salvar_parametro(parametro: str, valor: float, data_vigencia: date) -> None:
@@ -131,7 +117,7 @@ def salvar_parametro(parametro: str, valor: float, data_vigencia: date) -> None:
     Adiciona uma nova linha na aba Parametros (histórico preservado).
     data_vigencia define a partir de qual mês o valor é válido.
     """
-    ws = _get_ws_parametros()
+    ws = _get_planilha().worksheet(ABA_PARAMETROS)
     ws.append_row(
         [parametro, str(valor), data_vigencia.strftime("%d/%m/%Y")],
         value_input_option="USER_ENTERED",
@@ -177,7 +163,7 @@ def atualizar_assinatura(id_assinatura: str, campos: dict) -> None:
     `campos` é um dict {nome_coluna: novo_valor}.
     Lança ValueError se o ID não for encontrado.
     """
-    ws = _get_ws_assinaturas()
+    ws = _get_planilha().worksheet(ABA_ASSINATURAS)
     registros = ws.get_all_records(numericise_ignore=['all'])
 
     for idx, linha in enumerate(registros):
@@ -476,10 +462,9 @@ with col_version:
         unsafe_allow_html=True,
     )
 
-# Carrega dados uma vez — reutilizados em todas as abas
+# Carrega todas as abas em uma única chamada à API
 try:
-    registros    = carregar_dados()
-    assinaturas  = carregar_assinaturas()
+    registros, assinaturas, parametros = _carregar_planilha_completa()
 except Exception as e:
     st.error(f"Erro ao carregar dados da planilha: {e}")
     st.stop()
