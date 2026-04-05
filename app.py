@@ -443,6 +443,39 @@ def verificar_assinaturas_ausentes(
     return ausentes
 
 
+def calcular_linhas_referencia(
+    parametros: list[dict],
+    meses_ordenados: list[tuple[int, int]],
+) -> dict[tuple[int, int], dict]:
+    """
+    Para cada (ano, mes) em meses_ordenados, retorna um dict com:
+      - "renda":              float | None
+      - "limite_gastos":      float | None  (renda × limite_gastos_pct / 100)
+      - "limite_parcelados":  float | None  (renda × limite_parcelados_pct / 100)
+
+    Um valor é None quando o parâmetro ainda não foi cadastrado para aquele mês.
+    Os limites dependem da renda: se a renda for None num mês, os limites também são None.
+    """
+    resultado = {}
+    for (ano, mes) in meses_ordenados:
+        renda = get_valor_parametro(parametros, PARAM_RENDA, ano, mes)
+        if renda is not None:
+            pct_gastos    = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS, ano, mes)
+            pct_parcelados = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, ano, mes)
+            limite_gastos    = round(renda * pct_gastos / 100, 2)    if pct_gastos    is not None else None
+            limite_parcelados = round(renda * pct_parcelados / 100, 2) if pct_parcelados is not None else None
+        else:
+            limite_gastos    = None
+            limite_parcelados = None
+
+        resultado[(ano, mes)] = {
+            "renda":             renda,
+            "limite_gastos":     limite_gastos,
+            "limite_parcelados": limite_parcelados,
+        }
+    return resultado
+
+
 # ─── Interface ───────────────────────────────────────────────────────────────
 import pandas as pd
 
