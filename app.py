@@ -13,7 +13,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -313,29 +313,29 @@ with aba_upload:
                 st.error("Variável de ambiente N8N_WEBHOOK_URL não configurada.")
                 st.stop()
 
-            lista_imagens = []
-            for img in imagens:
+            total = len(imagens)
+            barra = st.progress(0, text="Iniciando envio...")
+
+            for idx, img in enumerate(imagens, start=1):
+                barra.progress(
+                    (idx - 1) / total,
+                    text=f"Enviando {idx}/{total}: {img.name}",
+                )
                 conteudo = img.read()
                 imagem_b64 = base64.b64encode(conteudo).decode("utf-8")
-                lista_imagens.append({
+                payload = {
                     "nome": img.name,
                     "tipo": img.type,
                     "dados": imagem_b64,
-                })
-
-            with st.spinner("Enviando imagens..."):
+                }
                 try:
-                    resposta = requests.post(
-                        url_n8n,
-                        json={"imagens": lista_imagens},
-                        timeout=60,
-                    )
-                    if resposta.status_code == 200:
-                        st.success("✅ Imagens enviadas com sucesso!")
-                        st.json(resposta.json())
-                    else:
-                        st.error(f"Erro ao enviar: HTTP {resposta.status_code}")
+                    resposta = requests.post(url_n8n, json=payload, timeout=60)
+                    if resposta.status_code != 200:
+                        st.error(f"❌ Erro ao enviar **{img.name}**: HTTP {resposta.status_code}")
                 except requests.exceptions.Timeout:
-                    st.error("Tempo de resposta excedido. Verifique se o n8n está ativo.")
+                    st.error(f"❌ Timeout ao enviar **{img.name}**. Verifique se o n8n está ativo.")
                 except requests.exceptions.RequestException as e:
-                    st.error(f"Erro de conexão: {e}")
+                    st.error(f"❌ Erro de conexão ao enviar **{img.name}**: {e}")
+
+            barra.progress(1.0, text="Concluído!")
+            st.success(f"✅ {total} imagem(ns) enviada(s) com sucesso!")
