@@ -1,6 +1,8 @@
 import os
 import json
 import base64
+import hashlib
+import calendar
 import requests
 import gspread
 import streamlit as st
@@ -13,21 +15,28 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.9.0"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
 ]
 NOMES_MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
                "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-# Nomes exatos das colunas na planilha
+# Nomes exatos das colunas na planilha de lançamentos
 COL_DATA      = "Data da compra"
 COL_DESCRICAO = "Descrição do gasto"
 COL_VALOR     = "Valor do gasto/parcela"
 COL_PARCELAS  = "Quantidade de parcelas [Parcelas]"
+
+# Aba e colunas de assinaturas (mesma ordem das colunas no GSheets)
+ABA_ASSINATURAS = "Assinaturas"
+COLUNAS_ASSINATURAS = [
+    "id", "descricao", "valor", "dia_do_mes", "periodicidade_meses",
+    "status", "data_inicio", "data_ultimo_lancamento", "data_cancelamento",
+]
 
 
 # ─── Google Sheets ───────────────────────────────────────────────────────────
@@ -53,7 +62,128 @@ def carregar_dados():
     return sheet.get_all_records(numericise_ignore=['all'])
 
 
+def _get_ws_assinaturas():
+    """Retorna o objeto worksheet da aba Assinaturas (sem cache — usada por escrita)."""
+    client = get_gspread_client()
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
+        st.stop()
+    return client.open_by_key(sheet_id).worksheet(ABA_ASSINATURAS)
+
+
+@st.cache_data(ttl=300)
+def carregar_assinaturas() -> list[dict]:
+    """Lê todas as linhas da aba Assinaturas. Retorna lista vazia em caso de erro."""
+    try:
+        ws = _get_ws_assinaturas()
+        return ws.get_all_records(numericise_ignore=['all'])
+    except Exception:
+        return []
+
+
+def gerar_id_assinatura(descricao: str, valor: str, dia_do_mes: int) -> str:
+    """Gera ID estável de 12 chars: sha1(descricao|valor|dia)."""
+    chave = f"{descricao.strip().lower()}|{str(valor).strip()}|{dia_do_mes}"
+    return hashlib.sha1(chave.encode()).hexdigest()[:12]
+
+
+def salvar_assinatura(assinatura: dict) -> None:
+    """Adiciona uma nova assinatura na aba. Limpa o cache após escrita."""
+    ws = _get_ws_assinaturas()
+    linha = [assinatura.get(col, "") for col in COLUNAS_ASSINATURAS]
+    ws.append_row(linha, value_input_option="USER_ENTERED")
+    st.cache_data.clear()
+
+
+def atualizar_assinatura(id_assinatura: str, campos: dict) -> None:
+    """
+    Atualiza campos específicos de uma assinatura buscando pelo ID.
+    `campos` é um dict {nome_coluna: novo_valor}.
+    Lança ValueError se o ID não for encontrado.
+    """
+    ws = _get_ws_assinaturas()
+    registros = ws.get_all_records(numericise_ignore=['all'])
+
+    for idx, linha in enumerate(registros):
+        if str(linha.get("id", "")) == id_assinatura:
+            row_num = idx + 2  # linha 1 = cabeçalho; idx é 0-based
+            for campo, valor in campos.items():
+                if campo in COLUNAS_ASSINATURAS:
+                    col_num = COLUNAS_ASSINATURAS.index(campo) + 1
+                    ws.update_cell(row_num, col_num, valor)
+            st.cache_data.clear()
+            return
+
+    raise ValueError(f"Assinatura com id '{id_assinatura}' não encontrada.")
+
+
 # ─── Lógica de negócio ───────────────────────────────────────────────────────
+def detectar_candidatos_assinatura(lancamentos: list, assinaturas: list) -> list[dict]:
+    """
+    Varre os lançamentos dos últimos 12 meses (mês atual + 11 anteriores) e
+    retorna grupos (descricao, valor, dia_do_mes) que aparecem em pelo menos
+    2 meses distintos, excluindo combinações já presentes na aba Assinaturas
+    com qualquer status.
+
+    Cada item retornado tem:
+      - descricao, valor, dia_do_mes
+      - ocorrencias: lista de datas (date) em que apareceu
+      - id: ID gerado para eventual persistência
+    """
+    hoje = date.today()
+    doze_meses_atras = avancar_mes(hoje.year, hoje.month, -11)  # (ano, mes) do limite inferior
+
+    # Conjunto de IDs já cadastrados em qualquer status → ignorar na detecção
+    ids_conhecidos = {str(a.get("id", "")) for a in assinaturas}
+
+    grupos: dict[tuple, list[date]] = defaultdict(list)
+
+    for linha in lancamentos:
+        data_str  = str(linha.get(COL_DATA, "")).strip()
+        valor_str = str(linha.get(COL_VALOR, "")).strip()
+        desc      = str(linha.get(COL_DESCRICAO, "")).strip()
+
+        if not data_str or not desc or not valor_str:
+            continue
+
+        try:
+            partes = data_str.split("/")
+            data_compra = date(int(partes[2]), int(partes[1]), int(partes[0]))
+        except (ValueError, IndexError):
+            continue
+
+        ano_compra = (data_compra.year, data_compra.month)
+
+        # Só considera os últimos 12 meses
+        if ano_compra < doze_meses_atras:
+            continue
+
+        chave = (desc, valor_str, data_compra.day)
+        grupos[chave].append(data_compra)
+
+    candidatos = []
+    for (desc, valor_str, dia), ocorrencias in grupos.items():
+        # Meses distintos em que apareceu
+        meses_distintos = {(d.year, d.month) for d in ocorrencias}
+        if len(meses_distintos) < 2:
+            continue
+
+        id_assinatura = gerar_id_assinatura(desc, valor_str, dia)
+        if id_assinatura in ids_conhecidos:
+            continue  # já foi classificado anteriormente
+
+        candidatos.append({
+            "id":          id_assinatura,
+            "descricao":   desc,
+            "valor":       valor_str,
+            "dia_do_mes":  dia,
+            "ocorrencias": sorted(ocorrencias),
+        })
+
+    return candidatos
+
+
 def fatura_da_compra(data_compra: date) -> tuple[int, int]:
     """
     Retorna (ano, mês) da fatura em que uma compra será lançada.
@@ -140,7 +270,127 @@ def calcular_totais_por_fatura(registros: list) -> dict:
     return dict(totais), fatura_atual
 
 
+def projetar_assinaturas(assinaturas_ativas: list, meses_projetados: set) -> dict:
+    """
+    Para cada assinatura ativa, calcula em quais meses do conjunto `meses_projetados`
+    ela deve incidir, respeitando a periodicidade.
+    Retorna {(ano, mes): valor_total_assinaturas}.
+    Nunca adiciona meses novos — só contribui para meses já existentes na projeção.
+    """
+    totais = defaultdict(float)
+
+    for assinatura in assinaturas_ativas:
+        valor        = parse_valor(assinatura.get("valor", "0"))
+        periodicidade = max(1, int(assinatura.get("periodicidade_meses", 1) or 1))
+        dia_bruto    = int(assinatura.get("dia_do_mes", 1) or 1)
+        data_ult_str = str(assinatura.get("data_ultimo_lancamento", "")).strip()
+
+        if not data_ult_str:
+            continue
+
+        try:
+            p = data_ult_str.split("/")
+            ultimo_ano, ultimo_mes = int(p[2]), int(p[1])
+        except (ValueError, IndexError):
+            continue
+
+        if not meses_projetados:
+            continue
+
+        max_mes = max(meses_projetados)
+
+        ano_p, mes_p = ultimo_ano, ultimo_mes
+        for _ in range(200):  # guarda contra loop infinito
+            ano_p, mes_p = avancar_mes(ano_p, mes_p, periodicidade)
+            if (ano_p, mes_p) > max_mes:
+                break
+
+            # Usa dia seguro (ex: 31 fev → 28 fev)
+            dia = min(dia_bruto, calendar.monthrange(ano_p, mes_p)[1])
+            try:
+                data_pag = date(ano_p, mes_p, dia)
+            except ValueError:
+                continue
+
+            fatura = fatura_da_compra(data_pag)
+            if fatura in meses_projetados:
+                totais[fatura] += valor
+
+    return dict(totais)
+
+
+def verificar_assinaturas_ausentes(
+    assinaturas_ativas: list,
+    lancamentos: list,
+    data_hoje: date,
+) -> list[dict]:
+    """
+    Retorna assinaturas esperadas no mês atual que não foram encontradas
+    nos lançamentos, após tolerância de 7 dias após o dia esperado.
+    """
+    ano_atual, mes_atual = data_hoje.year, data_hoje.month
+
+    # Conjunto de (descricao, valor) encontrados no mês atual
+    encontrados = set()
+    for linha in lancamentos:
+        data_str = str(linha.get(COL_DATA, "")).strip()
+        if not data_str:
+            continue
+        try:
+            p = data_str.split("/")
+            d = date(int(p[2]), int(p[1]), int(p[0]))
+        except (ValueError, IndexError):
+            continue
+        if d.year == ano_atual and d.month == mes_atual:
+            encontrados.add((
+                str(linha.get(COL_DESCRICAO, "")).strip(),
+                str(linha.get(COL_VALOR, "")).strip(),
+            ))
+
+    ausentes = []
+    for assinatura in assinaturas_ativas:
+        periodicidade = max(1, int(assinatura.get("periodicidade_meses", 1) or 1))
+        data_ult_str  = str(assinatura.get("data_ultimo_lancamento", "")).strip()
+        dia_bruto     = int(assinatura.get("dia_do_mes", 1) or 1)
+
+        if not data_ult_str:
+            continue
+        try:
+            p = data_ult_str.split("/")
+            ultimo_ano, ultimo_mes = int(p[2]), int(p[1])
+        except (ValueError, IndexError):
+            continue
+
+        meses_desde_ultimo = (ano_atual - ultimo_ano) * 12 + (mes_atual - ultimo_mes)
+
+        # Era esperada este mês?
+        if meses_desde_ultimo <= 0 or meses_desde_ultimo % periodicidade != 0:
+            continue
+
+        # Ainda dentro do prazo de tolerância?
+        dia = min(dia_bruto, calendar.monthrange(ano_atual, mes_atual)[1])
+        data_limite = date(ano_atual, mes_atual, dia) + timedelta(days=7)
+        if data_hoje < data_limite:
+            continue
+
+        # Foi encontrada?
+        desc = str(assinatura.get("descricao", "")).strip()
+        val  = str(assinatura.get("valor", "")).strip()
+        if (desc, val) not in encontrados:
+            ausentes.append(assinatura)
+
+    return ausentes
+
+
 # ─── Interface ───────────────────────────────────────────────────────────────
+import pandas as pd
+
+# Session state
+if "classificando_id" not in st.session_state:
+    st.session_state.classificando_id = None
+if "ausentes_ignoradas" not in st.session_state:
+    st.session_state.ausentes_ignoradas = set()
+
 col_title, col_version = st.columns([5, 1])
 with col_title:
     st.title("💳 Gestão de Fatura")
@@ -151,9 +401,30 @@ with col_version:
         unsafe_allow_html=True,
     )
 
-aba_grafico, aba_upload = st.tabs(["📊 Visão Geral", "📤 Enviar Fatura"])
+# Carrega dados uma vez — reutilizados em todas as abas
+try:
+    registros    = carregar_dados()
+    assinaturas  = carregar_assinaturas()
+except Exception as e:
+    st.error(f"Erro ao carregar dados da planilha: {e}")
+    st.stop()
 
-# ── Aba: Gráfico ──────────────────────────────────────────────────────────────
+assinaturas_ativas = [a for a in assinaturas if str(a.get("status", "")) == "ativa"]
+candidatos         = detectar_candidatos_assinatura(registros, assinaturas)
+ausentes           = [
+    a for a in verificar_assinaturas_ausentes(assinaturas_ativas, registros, date.today())
+    if str(a.get("id", "")) not in st.session_state.ausentes_ignoradas
+]
+
+# ── Badge na aba de Assinaturas ───────────────────────────────────────────────
+alertas_total = len(candidatos) + len(ausentes)
+label_assinaturas = f"🔔 Assinaturas ({alertas_total})" if alertas_total else "🔔 Assinaturas"
+
+aba_grafico, aba_assinaturas, aba_upload = st.tabs(
+    ["📊 Visão Geral", label_assinaturas, "📤 Enviar Fatura"]
+)
+
+# ── Aba: Visão Geral ──────────────────────────────────────────────────────────
 with aba_grafico:
     col_titulo, col_botao = st.columns([6, 1])
     with col_titulo:
@@ -163,135 +434,289 @@ with aba_grafico:
             st.cache_data.clear()
             st.rerun()
 
-    try:
-        registros = carregar_dados()
-        totais, fatura_atual = calcular_totais_por_fatura(registros)
+    # Banners de notificação ──────────────────────────────────────────────────
+    if candidatos:
+        st.warning(
+            f"💡 **{len(candidatos)} possível(is) assinatura(s) detectada(s).** "
+            "Acesse a aba 🔔 Assinaturas para classificar."
+        )
 
-        if not totais:
-            st.info("Nenhum lançamento futuro encontrado na planilha.")
-        else:
-            faturas_ordenadas = sorted(totais.keys())
+    if ausentes:
+        st.error(
+            f"⚠️ **{len(ausentes)} assinatura(s) esperada(s) não encontrada(s) este mês.** "
+            "Acesse a aba 🔔 Assinaturas para verificar."
+        )
 
-            labels  = []
-            valores = []
-            cores   = []
+    # Gráfico ─────────────────────────────────────────────────────────────────
+    totais, fatura_atual = calcular_totais_por_fatura(registros)
 
-            for (ano, mes) in faturas_ordenadas:
-                nome = f"{NOMES_MESES[mes - 1]}/{str(ano)[-2:]}"
-                if (ano, mes) == fatura_atual:
-                    nome += " ●"          # marcador visual de fatura aberta
-                    cores.append("#E05C5C")
-                else:
-                    cores.append("#4A90D9")
-                labels.append(nome)
-                valores.append(round(totais[(ano, mes)], 2))
+    # Adiciona assinaturas à projeção (sem estender o range)
+    meses_projetados = set(totais.keys())
+    totais_assin = projetar_assinaturas(assinaturas_ativas, meses_projetados)
+    for chave, val in totais_assin.items():
+        if chave in totais:
+            totais[chave] += val
 
-            def formatar_brl(v: float) -> str:
-                return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    if not totais:
+        st.info("Nenhum lançamento futuro encontrado na planilha.")
+    else:
+        faturas_ordenadas = sorted(totais.keys())
 
-            fig = go.Figure(go.Bar(
-                x=labels,
-                y=valores,
-                marker_color=cores,
-                text=[formatar_brl(v) for v in valores],
-                textposition="outside",
-                hovertemplate="%{x}<br>%{text}<extra></extra>",
-            ))
+        labels  = []
+        valores = []
+        cores   = []
 
-            fig.update_layout(
-                yaxis_title="Valor (R$)",
-                yaxis=dict(tickformat=",.0f"),
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-                showlegend=False,
-                height=420,
-                margin=dict(t=40, b=20),
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Cards de resumo abaixo do gráfico
-            cards = []
-
-            # 1. Fatura em aberto e a próxima
-            for fat in faturas_ordenadas[:2]:
-                ano_c, mes_c = fat
-                rotulo = f"{NOMES_MESES[mes_c - 1]}/{ano_c}"
-                if fat == fatura_atual:
-                    rotulo += " (aberta)"
-                cards.append((rotulo, totais[fat]))
-
-            # 2-4. Primeira fatura abaixo de cada limiar (a partir da 3ª em diante)
-            for limiar in [1000, 500, 100]:
-                for fat in faturas_ordenadas[2:]:
-                    if totais[fat] < limiar:
-                        ano_c, mes_c = fat
-                        rotulo = f"< R${limiar} em {NOMES_MESES[mes_c - 1]}/{ano_c}"
-                        cards.append((rotulo, totais[fat]))
-                        break  # só o primeiro que cruza o limiar
-
-            colunas = st.columns(len(cards))
-            for i, (rotulo, valor) in enumerate(cards):
-                with colunas[i]:
-                    st.metric(rotulo, formatar_brl(valor))
-
-        # ── Debug ────────────────────────────────────────────────────────────
-        with st.expander("🔍 Debug — lançamentos por fatura"):
-            st.write(f"**Linhas lidas do Sheets:** {len(registros)}")
-            st.write(f"**Fatura atual:** {NOMES_MESES[fatura_atual[1]-1]}/{fatura_atual[0]}")
-
-            # Amostra dos 5 primeiros valores brutos para diagnóstico
-            st.write("**Amostra de valores brutos do Sheets (primeiras 5 linhas):**")
-            amostra = []
-            for linha in registros[:5]:
-                valor_raw = linha.get(COL_VALOR, "N/A")
-                amostra.append({
-                    "Descrição":    str(linha.get(COL_DESCRICAO, ""))[:30],
-                    "valor_raw":    repr(valor_raw),
-                    "tipo":         type(valor_raw).__name__,
-                    "parse_result": parse_valor(valor_raw),
-                })
-            import pandas as pd
-            st.dataframe(pd.DataFrame(amostra), use_container_width=True, hide_index=True)
-
-            debug_rows = []
-            for linha in registros:
-                data_str  = str(linha.get(COL_DATA, "")).strip()
-                valor_raw = linha.get(COL_VALOR, "0")
-                parcelas  = linha.get(COL_PARCELAS, 1)
-                desc      = str(linha.get(COL_DESCRICAO, ""))
-                try:
-                    partes = data_str.split("/")
-                    dc = date(int(partes[2]), int(partes[1]), int(partes[0]))
-                    tp = int(parcelas)
-                    valor = parse_valor(valor_raw)
-                    pf = fatura_da_compra(dc)
-                    for i in range(tp):
-                        ano_f, mes_f = avancar_mes(pf[0], pf[1], i)
-                        if (ano_f, mes_f) >= fatura_atual:
-                            debug_rows.append({
-                                "Fatura":      f"{NOMES_MESES[mes_f-1]}/{ano_f}",
-                                "Data compra": data_str,
-                                "Descrição":   desc[:40],
-                                "Valor (R$)":  valor,
-                                "Parcela":     f"{i+1}/{tp}",
-                            })
-                except Exception:
-                    pass
-
-            df = pd.DataFrame(debug_rows)
-            if not df.empty:
-                st.write(f"**Total de lançamentos futuros projetados:** {len(df)}")
-                st.dataframe(
-                    df.sort_values(["Fatura", "Data compra"]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+        for (ano, mes) in faturas_ordenadas:
+            nome = f"{NOMES_MESES[mes - 1]}/{str(ano)[-2:]}"
+            if (ano, mes) == fatura_atual:
+                nome += " ●"
+                cores.append("#E05C5C")
             else:
-                st.info("Nenhum lançamento futuro encontrado.")
+                cores.append("#4A90D9")
+            labels.append(nome)
+            valores.append(round(totais[(ano, mes)], 2))
 
-    except Exception as e:
-        st.error(f"Erro ao carregar dados da planilha: {e}")
+        def formatar_brl(v: float) -> str:
+            return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        fig = go.Figure(go.Bar(
+            x=labels,
+            y=valores,
+            marker_color=cores,
+            text=[formatar_brl(v) for v in valores],
+            textposition="outside",
+            hovertemplate="%{x}<br>%{text}<extra></extra>",
+        ))
+        fig.update_layout(
+            yaxis_title="Valor (R$)",
+            yaxis=dict(tickformat=",.0f"),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+            height=420,
+            margin=dict(t=40, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Cards ───────────────────────────────────────────────────────────────
+        cards = []
+        for fat in faturas_ordenadas[:2]:
+            ano_c, mes_c = fat
+            rotulo = f"{NOMES_MESES[mes_c - 1]}/{ano_c}"
+            if fat == fatura_atual:
+                rotulo += " (aberta)"
+            cards.append((rotulo, totais[fat]))
+
+        for limiar in [1000, 500, 100]:
+            for fat in faturas_ordenadas[2:]:
+                if totais[fat] < limiar:
+                    ano_c, mes_c = fat
+                    rotulo = f"< R${limiar} em {NOMES_MESES[mes_c - 1]}/{ano_c}"
+                    cards.append((rotulo, totais[fat]))
+                    break
+
+        colunas = st.columns(len(cards))
+        for i, (rotulo, valor) in enumerate(cards):
+            with colunas[i]:
+                st.metric(rotulo, formatar_brl(valor))
+
+    # Debug ───────────────────────────────────────────────────────────────────
+    with st.expander("🔍 Debug — lançamentos por fatura"):
+        st.write(f"**Linhas lidas do Sheets:** {len(registros)}")
+        st.write(f"**Fatura atual:** {NOMES_MESES[fatura_atual[1]-1]}/{fatura_atual[0]}")
+
+        st.write("**Amostra de valores brutos do Sheets (primeiras 5 linhas):**")
+        amostra = []
+        for linha in registros[:5]:
+            valor_raw = linha.get(COL_VALOR, "N/A")
+            amostra.append({
+                "Descrição":    str(linha.get(COL_DESCRICAO, ""))[:30],
+                "valor_raw":    repr(valor_raw),
+                "tipo":         type(valor_raw).__name__,
+                "parse_result": parse_valor(valor_raw),
+            })
+        st.dataframe(pd.DataFrame(amostra), use_container_width=True, hide_index=True)
+
+        debug_rows = []
+        for linha in registros:
+            data_str  = str(linha.get(COL_DATA, "")).strip()
+            valor_raw = linha.get(COL_VALOR, "0")
+            parcelas  = linha.get(COL_PARCELAS, 1)
+            desc      = str(linha.get(COL_DESCRICAO, ""))
+            try:
+                partes = data_str.split("/")
+                dc = date(int(partes[2]), int(partes[1]), int(partes[0]))
+                tp = int(parcelas)
+                valor = parse_valor(valor_raw)
+                pf = fatura_da_compra(dc)
+                for i in range(tp):
+                    ano_f, mes_f = avancar_mes(pf[0], pf[1], i)
+                    if (ano_f, mes_f) >= fatura_atual:
+                        debug_rows.append({
+                            "Fatura":      f"{NOMES_MESES[mes_f-1]}/{ano_f}",
+                            "Data compra": data_str,
+                            "Descrição":   desc[:40],
+                            "Valor (R$)":  valor,
+                            "Parcela":     f"{i+1}/{tp}",
+                        })
+            except Exception:
+                pass
+
+        df = pd.DataFrame(debug_rows)
+        if not df.empty:
+            st.write(f"**Total de lançamentos futuros projetados:** {len(df)}")
+            st.dataframe(
+                df.sort_values(["Fatura", "Data compra"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("Nenhum lançamento futuro encontrado.")
+
+
+# ── Aba: Assinaturas ──────────────────────────────────────────────────────────
+with aba_assinaturas:
+
+    # ── Seção 1: Candidatos a classificar ────────────────────────────────────
+    if candidatos:
+        st.subheader("💡 Possíveis assinaturas detectadas")
+        st.caption(
+            "Esses lançamentos apareceram em 2 ou mais meses distintos com "
+            "o mesmo valor, descrição e dia. Classifique cada um abaixo."
+        )
+
+        for candidato in candidatos:
+            cid   = candidato["id"]
+            desc  = candidato["descricao"]
+            valor = candidato["valor"]
+            dia   = candidato["dia_do_mes"]
+            n_oc  = len({(d.year, d.month) for d in candidato["ocorrencias"]})
+
+            with st.container(border=True):
+                col_info, col_acoes = st.columns([3, 2])
+                with col_info:
+                    st.markdown(f"**{desc}**")
+                    st.caption(f"Valor: {valor} · Dia {dia} do mês · {n_oc} ocorrência(s)")
+
+                with col_acoes:
+                    # Formulário inline de periodicidade
+                    if st.session_state.classificando_id == cid:
+                        periodicidade = st.selectbox(
+                            "Periodicidade",
+                            options=[1, 6, 12],
+                            format_func=lambda x: {1: "Mensal", 6: "Semestral", 12: "Anual"}[x],
+                            key=f"per_{cid}",
+                        )
+                        col_conf, col_canc = st.columns(2)
+                        with col_conf:
+                            if st.button("✅ Confirmar", key=f"conf_{cid}", type="primary"):
+                                ultima_oc = max(candidato["ocorrencias"])
+                                salvar_assinatura({
+                                    "id":                     cid,
+                                    "descricao":              desc,
+                                    "valor":                  valor,
+                                    "dia_do_mes":             dia,
+                                    "periodicidade_meses":    periodicidade,
+                                    "status":                 "ativa",
+                                    "data_inicio":            ultima_oc.strftime("%d/%m/%Y"),
+                                    "data_ultimo_lancamento": ultima_oc.strftime("%d/%m/%Y"),
+                                    "data_cancelamento":      "",
+                                })
+                                st.session_state.classificando_id = None
+                                st.rerun()
+                        with col_canc:
+                            if st.button("✖ Cancelar", key=f"canc_{cid}"):
+                                st.session_state.classificando_id = None
+                                st.rerun()
+                    else:
+                        col_b1, col_b2 = st.columns(2)
+                        with col_b1:
+                            if st.button("É assinatura", key=f"sim_{cid}", type="primary"):
+                                st.session_state.classificando_id = cid
+                                st.rerun()
+                        with col_b2:
+                            if st.button("Ignorar", key=f"ign_{cid}"):
+                                ultima_oc = max(candidato["ocorrencias"])
+                                salvar_assinatura({
+                                    "id":                     cid,
+                                    "descricao":              desc,
+                                    "valor":                  valor,
+                                    "dia_do_mes":             dia,
+                                    "periodicidade_meses":    1,
+                                    "status":                 "ignorada",
+                                    "data_inicio":            ultima_oc.strftime("%d/%m/%Y"),
+                                    "data_ultimo_lancamento": ultima_oc.strftime("%d/%m/%Y"),
+                                    "data_cancelamento":      "",
+                                })
+                                st.rerun()
+    else:
+        st.success("✅ Nenhum novo candidato a assinatura detectado.")
+
+    st.divider()
+
+    # ── Seção 2: Assinaturas ausentes ────────────────────────────────────────
+    if ausentes:
+        st.subheader("⚠️ Assinaturas não encontradas este mês")
+        st.caption("Essas assinaturas eram esperadas mas não aparecem nos lançamentos do mês atual.")
+
+        for assinatura in ausentes:
+            aid  = str(assinatura.get("id", ""))
+            desc = str(assinatura.get("descricao", ""))
+            val  = str(assinatura.get("valor", ""))
+            dia  = str(assinatura.get("dia_do_mes", ""))
+
+            with st.container(border=True):
+                col_info, col_acoes = st.columns([3, 2])
+                with col_info:
+                    st.markdown(f"**{desc}**")
+                    st.caption(f"Valor: {val} · Esperada no dia {dia}")
+                with col_acoes:
+                    col_b1, col_b2 = st.columns(2)
+                    with col_b1:
+                        if st.button("Sim, cancelada", key=f"cancel_{aid}", type="primary"):
+                            atualizar_assinatura(aid, {
+                                "status":            "cancelada",
+                                "data_cancelamento": date.today().strftime("%d/%m/%Y"),
+                            })
+                            st.rerun()
+                    with col_b2:
+                        if st.button("Não, ativa", key=f"ativa_{aid}"):
+                            st.session_state.ausentes_ignoradas.add(aid)
+                            st.rerun()
+
+    st.divider()
+
+    # ── Seção 3: Assinaturas ativas ──────────────────────────────────────────
+    st.subheader("📋 Assinaturas ativas")
+
+    MAP_PERIODICIDADE = {1: "Mensal", 6: "Semestral", 12: "Anual"}
+
+    if assinaturas_ativas:
+        for assinatura in assinaturas_ativas:
+            aid  = str(assinatura.get("id", ""))
+            desc = str(assinatura.get("descricao", ""))
+            val  = str(assinatura.get("valor", ""))
+            dia  = str(assinatura.get("dia_do_mes", ""))
+            per  = int(assinatura.get("periodicidade_meses", 1) or 1)
+            ult  = str(assinatura.get("data_ultimo_lancamento", ""))
+
+            with st.container(border=True):
+                col_info, col_btn = st.columns([4, 1])
+                with col_info:
+                    st.markdown(f"**{desc}**")
+                    st.caption(
+                        f"{MAP_PERIODICIDADE.get(per, f'{per} meses')} · "
+                        f"Valor: {val} · Dia {dia} · Último: {ult}"
+                    )
+                with col_btn:
+                    if st.button("Cancelar", key=f"del_{aid}"):
+                        atualizar_assinatura(aid, {
+                            "status":            "cancelada",
+                            "data_cancelamento": date.today().strftime("%d/%m/%Y"),
+                        })
+                        st.rerun()
+    else:
+        st.info("Nenhuma assinatura ativa cadastrada.")
 
 
 # ── Aba: Upload ───────────────────────────────────────────────────────────────
@@ -313,6 +738,13 @@ with aba_upload:
                 st.error("Variável de ambiente N8N_WEBHOOK_URL não configurada.")
                 st.stop()
 
+            # Monta headers — suporta autenticação opcional do webhook n8n
+            headers = {"Content-Type": "application/json"}
+            auth_token = os.environ.get("N8N_WEBHOOK_AUTH_TOKEN")
+            auth_header = os.environ.get("N8N_WEBHOOK_AUTH_HEADER", "Authorization")
+            if auth_token:
+                headers[auth_header] = auth_token
+
             total = len(imagens)
             barra = st.progress(0, text="Iniciando envio...")
 
@@ -331,8 +763,14 @@ with aba_upload:
                     }]
                 }
                 try:
-                    resposta = requests.post(url_n8n, json=payload, timeout=60)
-                    if resposta.status_code != 200:
+                    resposta = requests.post(url_n8n, json=payload, headers=headers, timeout=60)
+                    if resposta.status_code == 403:
+                        st.error(
+                            f"❌ **{img.name}**: HTTP 403 — Acesso negado. "
+                            "Verifique se o webhook do n8n exige autenticação "
+                            "(configure `N8N_WEBHOOK_AUTH_TOKEN` no Railway)."
+                        )
+                    elif resposta.status_code != 200:
                         st.error(f"❌ Erro ao enviar **{img.name}**: HTTP {resposta.status_code}")
                 except requests.exceptions.Timeout:
                     st.error(f"❌ Timeout ao enviar **{img.name}**. Verifique se o n8n está ativo.")
