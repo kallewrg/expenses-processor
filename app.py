@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.2"
+APP_VERSION = "1.9.3"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -68,10 +68,12 @@ def _get_planilha():
 
 
 @st.cache_data(ttl=300)
-def _carregar_planilha_completa() -> tuple[list, list, list]:
+def _carregar_planilha_completa(cache_buster: int = 0) -> tuple[list, list, list]:
     """
     Lê as três abas em uma única abertura da planilha (1 cota de API).
     Retorna (lancamentos, assinaturas, parametros).
+    O parâmetro cache_buster é usado apenas para invalidação controlada:
+    incrementar seu valor força um cache miss sem apagar o cache global.
     """
     planilha = _get_planilha()
     lancamentos = planilha.sheet1.get_all_records(numericise_ignore=['all'])
@@ -86,16 +88,21 @@ def _carregar_planilha_completa() -> tuple[list, list, list]:
     return lancamentos, assinaturas, parametros
 
 
+def invalidar_cache() -> None:
+    """Incrementa o cache buster, forçando reload na próxima chamada."""
+    st.session_state.cache_buster += 1
+
+
 def carregar_dados() -> list:
-    return _carregar_planilha_completa()[0]
+    return _carregar_planilha_completa(st.session_state.get("cache_buster", 0))[0]
 
 
 def carregar_assinaturas() -> list:
-    return _carregar_planilha_completa()[1]
+    return _carregar_planilha_completa(st.session_state.get("cache_buster", 0))[1]
 
 
 def carregar_parametros() -> list:
-    return _carregar_planilha_completa()[2]
+    return _carregar_planilha_completa(st.session_state.get("cache_buster", 0))[2]
 
 
 def gerar_id_assinatura(descricao: str, valor: str, dia_do_mes: int) -> str:
@@ -109,7 +116,7 @@ def salvar_assinatura(assinatura: dict) -> None:
     ws = _get_planilha().worksheet(ABA_ASSINATURAS)
     linha = [assinatura.get(col, "") for col in COLUNAS_ASSINATURAS]
     ws.append_row(linha, value_input_option="USER_ENTERED")
-    st.cache_data.clear()
+    invalidar_cache()
 
 
 def salvar_parametro(parametro: str, valor: float, data_vigencia: date) -> None:
@@ -122,7 +129,7 @@ def salvar_parametro(parametro: str, valor: float, data_vigencia: date) -> None:
         [parametro, str(valor), data_vigencia.strftime("%d/%m/%Y")],
         value_input_option="USER_ENTERED",
     )
-    st.cache_data.clear()
+    invalidar_cache()
 
 
 def get_valor_parametro(
@@ -173,7 +180,7 @@ def atualizar_assinatura(id_assinatura: str, campos: dict) -> None:
                 if campo in COLUNAS_ASSINATURAS:
                     col_num = COLUNAS_ASSINATURAS.index(campo) + 1
                     ws.update_cell(row_num, col_num, valor)
-            st.cache_data.clear()
+            invalidar_cache()
             return
 
     raise ValueError(f"Assinatura com id '{id_assinatura}' não encontrada.")
@@ -480,6 +487,8 @@ def calcular_linhas_referencia(
 import pandas as pd
 
 # Session state
+if "cache_buster" not in st.session_state:
+    st.session_state.cache_buster = 0
 if "classificando_id" not in st.session_state:
     st.session_state.classificando_id = None
 if "ausentes_ignoradas" not in st.session_state:
@@ -499,7 +508,7 @@ with col_version:
 
 # Carrega todas as abas em uma única chamada à API
 try:
-    registros, assinaturas, parametros = _carregar_planilha_completa()
+    registros, assinaturas, parametros = _carregar_planilha_completa(st.session_state.cache_buster)
 except Exception as e:
     st.error(f"Erro ao carregar dados da planilha: {e}")
     st.stop()
@@ -526,7 +535,7 @@ with aba_grafico:
         st.subheader("Faturas em aberto e futuras")
     with col_botao:
         if st.button("🔄 Atualizar", use_container_width=True):
-            st.cache_data.clear()
+            invalidar_cache()
             st.rerun()
 
     # Banners de notificação ──────────────────────────────────────────────────
