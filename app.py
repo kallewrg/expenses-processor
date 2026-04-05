@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.9.2"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -513,8 +513,8 @@ ausentes           = [
 alertas_total = len(candidatos) + len(ausentes)
 label_assinaturas = f"🔔 Assinaturas ({alertas_total})" if alertas_total else "🔔 Assinaturas"
 
-aba_grafico, aba_assinaturas, aba_upload = st.tabs(
-    ["📊 Visão Geral", label_assinaturas, "📤 Enviar Fatura"]
+aba_grafico, aba_assinaturas, aba_parametros, aba_upload = st.tabs(
+    ["📊 Visão Geral", label_assinaturas, "⚙️ Parâmetros", "📤 Enviar Fatura"]
 )
 
 # ── Aba: Visão Geral ──────────────────────────────────────────────────────────
@@ -813,6 +813,111 @@ with aba_assinaturas:
             st.divider()
     else:
         st.info("Nenhuma assinatura ativa cadastrada.")
+
+
+# ── Aba: Parâmetros ───────────────────────────────────────────────────────────
+with aba_parametros:
+    st.subheader("⚙️ Parâmetros financeiros")
+    st.caption(
+        "Esses valores são usados para desenhar as linhas de referência no gráfico. "
+        "Alterações na renda entram em vigor a partir do mês seguinte."
+    )
+
+    hoje = date.today()
+
+    # Lê valores atualmente vigentes para o mês atual
+    renda_atual        = get_valor_parametro(parametros, PARAM_RENDA,            hoje.year, hoje.month)
+    lim_gastos_atual   = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS,    hoje.year, hoje.month)
+    lim_parcel_atual   = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, hoje.year, hoje.month)
+
+    with st.form("form_parametros"):
+        nova_renda = st.number_input(
+            "💰 Renda mensal líquida (R$)",
+            min_value=0.0,
+            step=100.0,
+            value=float(renda_atual) if renda_atual is not None else 0.0,
+            format="%.2f",
+            help="Linha preta no gráfico. A alteração entra em vigor no mês seguinte.",
+        )
+        novo_lim_gastos = st.number_input(
+            "🔴 Limite de gastos (%)",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            value=float(lim_gastos_atual) if lim_gastos_atual is not None else 0.0,
+            format="%.1f",
+            help="Linha vermelha. Percentual da renda líquida.",
+        )
+        novo_lim_parcel = st.number_input(
+            "🟡 Limite de gastos parcelados (%)",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            value=float(lim_parcel_atual) if lim_parcel_atual is not None else 0.0,
+            format="%.1f",
+            help="Linha amarela. Percentual da renda líquida.",
+        )
+
+        salvar = st.form_submit_button("💾 Salvar alterações", type="primary")
+
+    if salvar:
+        # data_vigencia para renda = 1º do mês seguinte
+        proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
+        vig_renda   = date(proximo_mes[0], proximo_mes[1], 1)
+        # data_vigencia para percentuais = 1º do mês atual (vigência imediata)
+        vig_pct     = date(hoje.year, hoje.month, 1)
+
+        alteracoes = []
+
+        if renda_atual is None or nova_renda != renda_atual:
+            salvar_parametro(PARAM_RENDA, nova_renda, vig_renda)
+            alteracoes.append(
+                f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
+                f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year}"
+            )
+
+        if lim_gastos_atual is None or novo_lim_gastos != lim_gastos_atual:
+            salvar_parametro(PARAM_LIMITE_GASTOS, novo_lim_gastos, vig_pct)
+            abs_gastos = nova_renda * novo_lim_gastos / 100
+            alteracoes.append(
+                f"Limite de gastos: {novo_lim_gastos:.1f}% "
+                f"= R$ {abs_gastos:,.2f}"
+            )
+
+        if lim_parcel_atual is None or novo_lim_parcel != lim_parcel_atual:
+            salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
+            abs_parcel = nova_renda * novo_lim_parcel / 100
+            alteracoes.append(
+                f"Limite parcelados: {novo_lim_parcel:.1f}% "
+                f"= R$ {abs_parcel:,.2f}"
+            )
+
+        if alteracoes:
+            st.success("✅ Parâmetros salvos:\n\n" + "\n\n".join(f"- {a}" for a in alteracoes))
+        else:
+            st.info("Nenhuma alteração detectada.")
+
+    # Resumo dos valores vigentes
+    st.divider()
+    st.caption("**Valores vigentes neste mês**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        val = f"R$ {renda_atual:,.2f}" if renda_atual is not None else "—"
+        st.metric("Renda líquida", val)
+    with col2:
+        if lim_gastos_atual is not None and renda_atual is not None:
+            abs_g = renda_atual * lim_gastos_atual / 100
+            val = f"{lim_gastos_atual:.1f}%  (R$ {abs_g:,.2f})"
+        else:
+            val = "—"
+        st.metric("Limite de gastos", val)
+    with col3:
+        if lim_parcel_atual is not None and renda_atual is not None:
+            abs_p = renda_atual * lim_parcel_atual / 100
+            val = f"{lim_parcel_atual:.1f}%  (R$ {abs_p:,.2f})"
+        else:
+            val = "—"
+        st.metric("Limite parcelados", val)
 
 
 # ── Aba: Upload ───────────────────────────────────────────────────────────────
