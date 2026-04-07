@@ -884,48 +884,26 @@ with aba_parametros:
         salvar = st.form_submit_button("💾 Salvar alterações", type="primary")
 
     if salvar:
-        # data_vigencia para renda = 1º do mês seguinte (vigência futura)
+        # Grava os 3 parâmetros sempre (sem comparação)
         proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
         vig_renda   = date(proximo_mes[0], proximo_mes[1], 1)
-        # data_vigencia para percentuais = 1º do mês atual (vigência imediata)
         vig_pct     = date(hoje.year, hoje.month, 1)
 
-        alteracoes = []
-
         try:
-            # Usa tolerância de 0.01 para evitar falsos negativos por ponto flutuante
-            if renda_atual is None or abs(nova_renda - renda_atual) > 0.01:
-                salvar_parametro(PARAM_RENDA, nova_renda, vig_renda)
-                alteracoes.append(
-                    f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
-                    f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year} "
-                    f"(este mês permanece R$ {renda_atual:,.2f})" if renda_atual else
-                    f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
-                    f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year}"
-                )
+            salvar_parametro(PARAM_RENDA,             nova_renda,      vig_renda)
+            salvar_parametro(PARAM_LIMITE_GASTOS,     novo_lim_gastos, vig_pct)
+            salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
 
-            if lim_gastos_atual is None or abs(novo_lim_gastos - lim_gastos_atual) > 0.01:
-                salvar_parametro(PARAM_LIMITE_GASTOS, novo_lim_gastos, vig_pct)
-                abs_gastos = nova_renda * novo_lim_gastos / 100
-                alteracoes.append(
-                    f"Limite de gastos: {novo_lim_gastos:.1f}% = R$ {abs_gastos:,.2f}"
-                )
-
-            if lim_parcel_atual is None or abs(novo_lim_parcel - lim_parcel_atual) > 0.01:
-                salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
-                abs_parcel = nova_renda * novo_lim_parcel / 100
-                alteracoes.append(
-                    f"Limite parcelados: {novo_lim_parcel:.1f}% = R$ {abs_parcel:,.2f}"
-                )
-
-            if alteracoes:
-                st.session_state.param_save_feedback = {
-                    "type": "success",
-                    "msg": "✅ Parâmetros salvos:\n\n" + "\n\n".join(f"- {a}" for a in alteracoes),
-                }
-                st.rerun()
-            else:
-                st.info("Nenhuma alteração detectada.")
+            st.session_state.param_save_feedback = {
+                "type": "success",
+                "msg": (
+                    f"✅ Parâmetros salvos — "
+                    f"Renda: R$ {nova_renda:,.2f} (vigência {NOMES_MESES[vig_renda.month-1]}/{vig_renda.year}) · "
+                    f"Gastos: {novo_lim_gastos:.1f}% · "
+                    f"Parcelados: {novo_lim_parcel:.1f}%"
+                ),
+            }
+            st.rerun()
 
         except Exception as e:
             st.error(f"❌ Erro ao salvar parâmetros: {e}")
