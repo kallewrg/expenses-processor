@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.12"
+APP_VERSION = "1.9.13"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -512,14 +512,22 @@ alertas_total = len(candidatos) + len(ausentes)
 label_assinaturas = f"🔔 Assinaturas ({alertas_total})" if alertas_total else "🔔 Assinaturas"
 
 # ── Parâmetros — fora das tabs para evitar bug do st.form/st.button dentro de st.tabs ──
-# Nota: st.form dentro de st.expander(fechado) falha de forma intermitente no Streamlit
-# (submit não reconhecido / primeiro clique sem efeito). Form no nível superior + submit
-# sempre visível evita isso (ver issues #4531, #8987 no repositório streamlit).
+# Inicializar session_state só quando a chave não existe. Passar `value=renda_atual`
+# (etc.) em todo rerun faz o Streamlit reconciliar o number_input com o servidor e pode
+# descartar o que foi digitado no primeiro submit — a planilha não reflete a edição.
 
 hoje_param = date.today()
 renda_atual = get_valor_parametro(parametros, PARAM_RENDA, hoje_param.year, hoje_param.month)
 lim_gastos_atual = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS, hoje_param.year, hoje_param.month)
 lim_parcel_atual = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, hoje_param.year, hoje_param.month)
+
+if "param_form_renda" not in st.session_state:
+    st.session_state.param_form_renda = float(renda_atual or 0.0)
+if "param_form_lim_gastos" not in st.session_state:
+    st.session_state.param_form_lim_gastos = float(lim_gastos_atual or 0.0)
+if "param_form_lim_parcel" not in st.session_state:
+    st.session_state.param_form_lim_parcel = float(lim_parcel_atual or 0.0)
+
 
 st.subheader("⚙️ Parâmetros financeiros")
 
@@ -528,7 +536,6 @@ with st.form("parametros_financeiros"):
         "💰 Renda mensal líquida (R$)",
         min_value=0.0,
         step=100.0,
-        value=float(renda_atual or 0.0),
         format="%.2f",
         key="param_form_renda",
         help="A alteração entra em vigor no mês seguinte.",
@@ -538,7 +545,6 @@ with st.form("parametros_financeiros"):
         min_value=0.0,
         max_value=100.0,
         step=1.0,
-        value=float(lim_gastos_atual or 0.0),
         format="%.1f",
         key="param_form_lim_gastos",
     )
@@ -547,7 +553,6 @@ with st.form("parametros_financeiros"):
         min_value=0.0,
         max_value=100.0,
         step=1.0,
-        value=float(lim_parcel_atual or 0.0),
         format="%.1f",
         key="param_form_lim_parcel",
     )
@@ -558,10 +563,9 @@ if submitted:
     proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
     vig_renda = date(proximo_mes[0], proximo_mes[1], 1)
     vig_pct = date(hoje.year, hoje.month, 1)
-    # session_state no submit é a fonte de verdade após envio do form
-    renda_val = st.session_state["param_form_renda"]
-    lim_g_val = st.session_state["param_form_lim_gastos"]
-    lim_p_val = st.session_state["param_form_lim_parcel"]
+    renda_val = float(st.session_state["param_form_renda"])
+    lim_g_val = float(st.session_state["param_form_lim_gastos"])
+    lim_p_val = float(st.session_state["param_form_lim_parcel"])
     try:
         salvar_parametros([
             [PARAM_RENDA, str(renda_val), vig_renda.strftime("%d/%m/%Y")],
