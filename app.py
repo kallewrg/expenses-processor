@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.8"
+APP_VERSION = "1.9.9"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
