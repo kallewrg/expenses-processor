@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.9"
+APP_VERSION = "1.9.10"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -115,16 +115,13 @@ def salvar_assinatura(assinatura: dict) -> None:
     ws.append_row(linha, value_input_option="USER_ENTERED")
 
 
-def salvar_parametro(parametro: str, valor: float, data_vigencia: date) -> None:
+def salvar_parametros(linhas: list[list]) -> None:
     """
-    Adiciona uma nova linha na aba Parametros (histórico preservado).
-    data_vigencia define a partir de qual mês o valor é válido.
+    Grava múltiplas linhas na aba Parametros em uma única chamada à API.
+    Cada item de `linhas` deve ser [parametro, str(valor), "dd/mm/yyyy"].
     """
     ws = _get_planilha().worksheet(ABA_PARAMETROS)
-    ws.append_row(
-        [parametro, str(valor), data_vigencia.strftime("%d/%m/%Y")],
-        value_input_option="USER_ENTERED",
-    )
+    ws.append_rows(linhas, value_input_option="USER_ENTERED")
 
 
 def get_valor_parametro(
@@ -543,9 +540,11 @@ with st.expander("⚙️ Parâmetros financeiros", expanded=False):
         vig_renda   = date(proximo_mes[0], proximo_mes[1], 1)
         vig_pct     = date(hoje_param.year, hoje_param.month, 1)
         try:
-            salvar_parametro(PARAM_RENDA,             nova_renda,      vig_renda)
-            salvar_parametro(PARAM_LIMITE_GASTOS,     novo_lim_gastos, vig_pct)
-            salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
+            salvar_parametros([
+                [PARAM_RENDA,             str(nova_renda),      vig_renda.strftime("%d/%m/%Y")],
+                [PARAM_LIMITE_GASTOS,     str(novo_lim_gastos), vig_pct.strftime("%d/%m/%Y")],
+                [PARAM_LIMITE_PARCELADOS, str(novo_lim_parcel), vig_pct.strftime("%d/%m/%Y")],
+            ])
             st.success(
                 f"✅ Salvos — Renda: R$ {nova_renda:,.2f} "
                 f"(vigência {NOMES_MESES[vig_renda.month-1]}/{vig_renda.year}) · "
