@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.6"
+APP_VERSION = "1.9.7"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -853,37 +853,47 @@ with aba_parametros:
     lim_gastos_atual   = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS,     hoje.year, hoje.month)
     lim_parcel_atual   = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, hoje.year, hoje.month)
 
-    with st.form("form_parametros"):
-        nova_renda = st.number_input(
-            "💰 Renda mensal líquida (R$)",
-            min_value=0.0,
-            step=100.0,
-            value=float(renda_atual) if renda_atual is not None else 0.0,
-            format="%.2f",
-            help="Linha preta no gráfico. A alteração entra em vigor no mês seguinte.",
-        )
-        novo_lim_gastos = st.number_input(
-            "🔴 Limite de gastos (%)",
-            min_value=0.0,
-            max_value=100.0,
-            step=1.0,
-            value=float(lim_gastos_atual) if lim_gastos_atual is not None else 0.0,
-            format="%.1f",
-            help="Linha vermelha. Percentual da renda líquida.",
-        )
-        novo_lim_parcel = st.number_input(
-            "🟡 Limite de gastos parcelados (%)",
-            min_value=0.0,
-            max_value=100.0,
-            step=1.0,
-            value=float(lim_parcel_atual) if lim_parcel_atual is not None else 0.0,
-            format="%.1f",
-            help="Linha amarela. Percentual da renda líquida.",
-        )
+    # Diagnóstico: confirma o que está sendo lido da planilha
+    with st.expander("🔍 Diagnóstico — valores lidos da planilha"):
+        st.write(f"**Renda atual lida:** `{renda_atual}` ({type(renda_atual).__name__})")
+        st.write(f"**Limite gastos lido:** `{lim_gastos_atual}` ({type(lim_gastos_atual).__name__})")
+        st.write(f"**Limite parcelados lido:** `{lim_parcel_atual}` ({type(lim_parcel_atual).__name__})")
+        st.write(f"**Linhas na aba Parametros:** {len(parametros)}")
+        if parametros:
+            st.dataframe(parametros, use_container_width=True)
 
-        salvar = st.form_submit_button("💾 Salvar alterações", type="primary")
+    # Inputs sem st.form (compatibilidade com versões antigas do Streamlit)
+    nova_renda = st.number_input(
+        "💰 Renda mensal líquida (R$)",
+        min_value=0.0,
+        step=100.0,
+        value=float(renda_atual) if renda_atual is not None else 0.0,
+        format="%.2f",
+        help="Linha preta no gráfico. A alteração entra em vigor no mês seguinte.",
+        key="param_input_renda",
+    )
+    novo_lim_gastos = st.number_input(
+        "🔴 Limite de gastos (%)",
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        value=float(lim_gastos_atual) if lim_gastos_atual is not None else 0.0,
+        format="%.1f",
+        help="Linha vermelha. Percentual da renda líquida.",
+        key="param_input_gastos",
+    )
+    novo_lim_parcel = st.number_input(
+        "🟡 Limite de gastos parcelados (%)",
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        value=float(lim_parcel_atual) if lim_parcel_atual is not None else 0.0,
+        format="%.1f",
+        help="Linha amarela. Percentual da renda líquida.",
+        key="param_input_parcel",
+    )
 
-    if salvar:
+    if st.button("💾 Salvar alterações", type="primary", key="btn_salvar_params"):
         # data_vigencia para renda = 1º do mês seguinte (vigência futura)
         proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
         vig_renda   = date(proximo_mes[0], proximo_mes[1], 1)
@@ -896,12 +906,10 @@ with aba_parametros:
             # Usa tolerância de 0.01 para evitar falsos negativos por ponto flutuante
             if renda_atual is None or abs(nova_renda - renda_atual) > 0.01:
                 salvar_parametro(PARAM_RENDA, nova_renda, vig_renda)
+                desc_vigencia = f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year}"
+                atual_str = f" (este mês permanece R$ {renda_atual:,.2f})" if renda_atual else ""
                 alteracoes.append(
-                    f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
-                    f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year} "
-                    f"(este mês permanece R$ {renda_atual:,.2f})" if renda_atual else
-                    f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
-                    f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year}"
+                    f"Renda: R$ {nova_renda:,.2f} — vigência a partir de {desc_vigencia}{atual_str}"
                 )
 
             if lim_gastos_atual is None or abs(novo_lim_gastos - lim_gastos_atual) > 0.01:
@@ -925,7 +933,7 @@ with aba_parametros:
                 }
                 st.rerun()
             else:
-                st.info("Nenhuma alteração detectada.")
+                st.info("Nenhuma alteração detectada. Os valores inseridos são iguais aos atuais.")
 
         except Exception as e:
             st.error(f"❌ Erro ao salvar parâmetros: {e}")
