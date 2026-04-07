@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.5"
+APP_VERSION = "1.9.6"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -485,6 +485,8 @@ if "classificando_id" not in st.session_state:
     st.session_state.classificando_id = None
 if "ausentes_ignoradas" not in st.session_state:
     st.session_state.ausentes_ignoradas = set()
+if "param_save_feedback" not in st.session_state:
+    st.session_state.param_save_feedback = None  # {"type": "success"|"error", "msg": str}
 
 col_title, col_version = st.columns([5, 1])
 with col_title:
@@ -704,19 +706,22 @@ with aba_assinaturas:
                         with col_conf:
                             if st.button("✅ Confirmar", key=f"conf_{cid}", type="primary"):
                                 ultima_oc = max(candidato["ocorrencias"])
-                                salvar_assinatura({
-                                    "id":                     cid,
-                                    "descricao":              desc,
-                                    "valor":                  valor,
-                                    "dia_do_mes":             dia,
-                                    "periodicidade_meses":    periodicidade,
-                                    "status":                 "ativa",
-                                    "data_inicio":            ultima_oc.strftime("%d/%m/%Y"),
-                                    "data_ultimo_lancamento": ultima_oc.strftime("%d/%m/%Y"),
-                                    "data_cancelamento":      "",
-                                })
-                                st.session_state.classificando_id = None
-                                st.rerun()
+                                try:
+                                    salvar_assinatura({
+                                        "id":                     cid,
+                                        "descricao":              desc,
+                                        "valor":                  valor,
+                                        "dia_do_mes":             dia,
+                                        "periodicidade_meses":    periodicidade,
+                                        "status":                 "ativa",
+                                        "data_inicio":            ultima_oc.strftime("%d/%m/%Y"),
+                                        "data_ultimo_lancamento": ultima_oc.strftime("%d/%m/%Y"),
+                                        "data_cancelamento":      "",
+                                    })
+                                    st.session_state.classificando_id = None
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Erro ao salvar assinatura: {e}")
                         with col_canc:
                             if st.button("✖ Cancelar", key=f"canc_{cid}"):
                                 st.session_state.classificando_id = None
@@ -730,18 +735,21 @@ with aba_assinaturas:
                         with col_b2:
                             if st.button("Ignorar", key=f"ign_{cid}"):
                                 ultima_oc = max(candidato["ocorrencias"])
-                                salvar_assinatura({
-                                    "id":                     cid,
-                                    "descricao":              desc,
-                                    "valor":                  valor,
-                                    "dia_do_mes":             dia,
-                                    "periodicidade_meses":    1,
-                                    "status":                 "ignorada",
-                                    "data_inicio":            ultima_oc.strftime("%d/%m/%Y"),
-                                    "data_ultimo_lancamento": ultima_oc.strftime("%d/%m/%Y"),
-                                    "data_cancelamento":      "",
-                                })
-                                st.rerun()
+                                try:
+                                    salvar_assinatura({
+                                        "id":                     cid,
+                                        "descricao":              desc,
+                                        "valor":                  valor,
+                                        "dia_do_mes":             dia,
+                                        "periodicidade_meses":    1,
+                                        "status":                 "ignorada",
+                                        "data_inicio":            ultima_oc.strftime("%d/%m/%Y"),
+                                        "data_ultimo_lancamento": ultima_oc.strftime("%d/%m/%Y"),
+                                        "data_cancelamento":      "",
+                                    })
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Erro ao salvar assinatura: {e}")
             st.divider()
     else:
         st.success("✅ Nenhum novo candidato a assinatura detectado.")
@@ -768,11 +776,14 @@ with aba_assinaturas:
                     col_b1, col_b2 = st.columns(2)
                     with col_b1:
                         if st.button("Sim, cancelada", key=f"cancel_{aid}", type="primary"):
-                            atualizar_assinatura(aid, {
-                                "status":            "cancelada",
-                                "data_cancelamento": date.today().strftime("%d/%m/%Y"),
-                            })
-                            st.rerun()
+                            try:
+                                atualizar_assinatura(aid, {
+                                    "status":            "cancelada",
+                                    "data_cancelamento": date.today().strftime("%d/%m/%Y"),
+                                })
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Erro ao cancelar assinatura: {e}")
                     with col_b2:
                         if st.button("Não, ativa", key=f"ativa_{aid}"):
                             st.session_state.ausentes_ignoradas.add(aid)
@@ -805,11 +816,14 @@ with aba_assinaturas:
                     )
                 with col_btn:
                     if st.button("Cancelar", key=f"del_{aid}"):
-                        atualizar_assinatura(aid, {
-                            "status":            "cancelada",
-                            "data_cancelamento": date.today().strftime("%d/%m/%Y"),
-                        })
-                        st.rerun()
+                        try:
+                            atualizar_assinatura(aid, {
+                                "status":            "cancelada",
+                                "data_cancelamento": date.today().strftime("%d/%m/%Y"),
+                            })
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Erro ao cancelar assinatura: {e}")
             st.divider()
     else:
         st.info("Nenhuma assinatura ativa cadastrada.")
@@ -823,11 +837,20 @@ with aba_parametros:
         "Alterações na renda entram em vigor a partir do mês seguinte."
     )
 
+    # Exibe feedback de save (persistido via session_state para sobreviver ao rerun)
+    if st.session_state.param_save_feedback:
+        fb = st.session_state.param_save_feedback
+        st.session_state.param_save_feedback = None
+        if fb["type"] == "success":
+            st.success(fb["msg"])
+        else:
+            st.error(fb["msg"])
+
     hoje = date.today()
 
     # Lê valores atualmente vigentes para o mês atual
-    renda_atual        = get_valor_parametro(parametros, PARAM_RENDA,            hoje.year, hoje.month)
-    lim_gastos_atual   = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS,    hoje.year, hoje.month)
+    renda_atual        = get_valor_parametro(parametros, PARAM_RENDA,             hoje.year, hoje.month)
+    lim_gastos_atual   = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS,     hoje.year, hoje.month)
     lim_parcel_atual   = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, hoje.year, hoje.month)
 
     with st.form("form_parametros"):
@@ -861,7 +884,7 @@ with aba_parametros:
         salvar = st.form_submit_button("💾 Salvar alterações", type="primary")
 
     if salvar:
-        # data_vigencia para renda = 1º do mês seguinte
+        # data_vigencia para renda = 1º do mês seguinte (vigência futura)
         proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
         vig_renda   = date(proximo_mes[0], proximo_mes[1], 1)
         # data_vigencia para percentuais = 1º do mês atual (vigência imediata)
@@ -869,33 +892,43 @@ with aba_parametros:
 
         alteracoes = []
 
-        if renda_atual is None or nova_renda != renda_atual:
-            salvar_parametro(PARAM_RENDA, nova_renda, vig_renda)
-            alteracoes.append(
-                f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
-                f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year}"
-            )
+        try:
+            # Usa tolerância de 0.01 para evitar falsos negativos por ponto flutuante
+            if renda_atual is None or abs(nova_renda - renda_atual) > 0.01:
+                salvar_parametro(PARAM_RENDA, nova_renda, vig_renda)
+                alteracoes.append(
+                    f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
+                    f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year} "
+                    f"(este mês permanece R$ {renda_atual:,.2f})" if renda_atual else
+                    f"Renda: R$ {nova_renda:,.2f} — vigência a partir de "
+                    f"{NOMES_MESES[vig_renda.month - 1]}/{vig_renda.year}"
+                )
 
-        if lim_gastos_atual is None or novo_lim_gastos != lim_gastos_atual:
-            salvar_parametro(PARAM_LIMITE_GASTOS, novo_lim_gastos, vig_pct)
-            abs_gastos = nova_renda * novo_lim_gastos / 100
-            alteracoes.append(
-                f"Limite de gastos: {novo_lim_gastos:.1f}% "
-                f"= R$ {abs_gastos:,.2f}"
-            )
+            if lim_gastos_atual is None or abs(novo_lim_gastos - lim_gastos_atual) > 0.01:
+                salvar_parametro(PARAM_LIMITE_GASTOS, novo_lim_gastos, vig_pct)
+                abs_gastos = nova_renda * novo_lim_gastos / 100
+                alteracoes.append(
+                    f"Limite de gastos: {novo_lim_gastos:.1f}% = R$ {abs_gastos:,.2f}"
+                )
 
-        if lim_parcel_atual is None or novo_lim_parcel != lim_parcel_atual:
-            salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
-            abs_parcel = nova_renda * novo_lim_parcel / 100
-            alteracoes.append(
-                f"Limite parcelados: {novo_lim_parcel:.1f}% "
-                f"= R$ {abs_parcel:,.2f}"
-            )
+            if lim_parcel_atual is None or abs(novo_lim_parcel - lim_parcel_atual) > 0.01:
+                salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
+                abs_parcel = nova_renda * novo_lim_parcel / 100
+                alteracoes.append(
+                    f"Limite parcelados: {novo_lim_parcel:.1f}% = R$ {abs_parcel:,.2f}"
+                )
 
-        if alteracoes:
-            st.rerun()
-        else:
-            st.info("Nenhuma alteração detectada.")
+            if alteracoes:
+                st.session_state.param_save_feedback = {
+                    "type": "success",
+                    "msg": "✅ Parâmetros salvos:\n\n" + "\n\n".join(f"- {a}" for a in alteracoes),
+                }
+                st.rerun()
+            else:
+                st.info("Nenhuma alteração detectada.")
+
+        except Exception as e:
+            st.error(f"❌ Erro ao salvar parâmetros: {e}")
 
     # Resumo dos valores vigentes
     st.divider()
