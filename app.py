@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.6"
+APP_VERSION = "1.9.7"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -853,38 +853,43 @@ with aba_parametros:
     lim_gastos_atual   = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS,     hoje.year, hoje.month)
     lim_parcel_atual   = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, hoje.year, hoje.month)
 
-    with st.form("form_parametros"):
-        nova_renda = st.number_input(
-            "💰 Renda mensal líquida (R$)",
-            min_value=0.0,
-            step=100.0,
-            value=float(renda_atual) if renda_atual is not None else 0.0,
-            format="%.2f",
-            help="Linha preta no gráfico. A alteração entra em vigor no mês seguinte.",
-        )
-        novo_lim_gastos = st.number_input(
-            "🔴 Limite de gastos (%)",
-            min_value=0.0,
-            max_value=100.0,
-            step=1.0,
-            value=float(lim_gastos_atual) if lim_gastos_atual is not None else 0.0,
-            format="%.1f",
-            help="Linha vermelha. Percentual da renda líquida.",
-        )
-        novo_lim_parcel = st.number_input(
-            "🟡 Limite de gastos parcelados (%)",
-            min_value=0.0,
-            max_value=100.0,
-            step=1.0,
-            value=float(lim_parcel_atual) if lim_parcel_atual is not None else 0.0,
-            format="%.1f",
-            help="Linha amarela. Percentual da renda líquida.",
-        )
+    # Inicializa valores na session_state apenas se ainda não existem
+    # (apagados após save para recarregar da planilha no próximo render)
+    if "p_renda" not in st.session_state:
+        st.session_state["p_renda"] = 0.0
+    if "p_gastos" not in st.session_state:
+        st.session_state["p_gastos"] = 0.0
+    if "p_parcel" not in st.session_state:
+        st.session_state["p_parcel"] = 0.0
 
-        salvar = st.form_submit_button("💾 Salvar alterações", type="primary")
+    nova_renda = st.number_input(
+        "💰 Renda mensal líquida (R$)",
+        min_value=0.0,
+        step=100.0,
+        format="%.2f",
+        help="Linha preta no gráfico. A alteração entra em vigor no mês seguinte.",
+        key="p_renda",
+    )
+    novo_lim_gastos = st.number_input(
+        "🔴 Limite de gastos (%)",
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        format="%.1f",
+        help="Linha vermelha. Percentual da renda líquida.",
+        key="p_gastos",
+    )
+    novo_lim_parcel = st.number_input(
+        "🟡 Limite de gastos parcelados (%)",
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        format="%.1f",
+        help="Linha amarela. Percentual da renda líquida.",
+        key="p_parcel",
+    )
 
-    if salvar:
-        # Grava os 3 parâmetros sempre (sem comparação)
+    if st.button("💾 Salvar alterações", type="primary"):
         proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
         vig_renda   = date(proximo_mes[0], proximo_mes[1], 1)
         vig_pct     = date(hoje.year, hoje.month, 1)
@@ -893,6 +898,10 @@ with aba_parametros:
             salvar_parametro(PARAM_RENDA,             nova_renda,      vig_renda)
             salvar_parametro(PARAM_LIMITE_GASTOS,     novo_lim_gastos, vig_pct)
             salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
+
+            # Remove as keys para que os inputs recarreguem da planilha após o rerun
+            for k in ["p_renda", "p_gastos", "p_parcel"]:
+                st.session_state.pop(k, None)
 
             st.session_state.param_save_feedback = {
                 "type": "success",
