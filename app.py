@@ -15,7 +15,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
 
 # ─── Versão ─────────────────────────────────────────────────────────────────
-APP_VERSION = "1.9.10"
+APP_VERSION = "1.9.11"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 SCOPES = [
@@ -519,39 +519,62 @@ with st.expander("⚙️ Parâmetros financeiros", expanded=False):
     lim_gastos_atual   = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS,     hoje_param.year, hoje_param.month)
     lim_parcel_atual   = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, hoje_param.year, hoje_param.month)
 
-    with st.form("form_parametros"):
-        nova_renda = st.number_input(
+    with st.form("parametros_financeiros"):
+        renda_in = st.number_input(
             "💰 Renda mensal líquida (R$)",
-            min_value=0.0, step=100.0, value=0.0, format="%.2f",
+            min_value=0.0,
+            step=100.0,
+            value=float(renda_atual or 0.0),
+            format="%.2f",
+            key="param_form_renda",
             help="A alteração entra em vigor no mês seguinte.",
         )
-        novo_lim_gastos = st.number_input(
+        lim_g_in = st.number_input(
             "🔴 Limite de gastos (%)",
-            min_value=0.0, max_value=100.0, step=1.0, value=0.0, format="%.1f",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            value=float(lim_gastos_atual or 0.0),
+            format="%.1f",
+            key="param_form_lim_gastos",
         )
-        novo_lim_parcel = st.number_input(
+        lim_p_in = st.number_input(
             "🟡 Limite de gastos parcelados (%)",
-            min_value=0.0, max_value=100.0, step=1.0, value=0.0, format="%.1f",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            value=float(lim_parcel_atual or 0.0),
+            format="%.1f",
+            key="param_form_lim_parcel",
         )
-        salvar = st.form_submit_button("💾 Salvar alterações", type="primary")
+        submitted = st.form_submit_button("💾 Salvar alterações", type="primary")
 
-    if salvar:
-        proximo_mes = avancar_mes(hoje_param.year, hoje_param.month, 1)
-        vig_renda   = date(proximo_mes[0], proximo_mes[1], 1)
-        vig_pct     = date(hoje_param.year, hoje_param.month, 1)
+    if submitted:
+        hoje = date.today()
+        proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
+        vig_renda = date(proximo_mes[0], proximo_mes[1], 1)
+        vig_pct = date(hoje.year, hoje.month, 1)
         try:
             salvar_parametros([
-                [PARAM_RENDA,             str(nova_renda),      vig_renda.strftime("%d/%m/%Y")],
-                [PARAM_LIMITE_GASTOS,     str(novo_lim_gastos), vig_pct.strftime("%d/%m/%Y")],
-                [PARAM_LIMITE_PARCELADOS, str(novo_lim_parcel), vig_pct.strftime("%d/%m/%Y")],
+                [PARAM_RENDA,             str(renda_in), vig_renda.strftime("%d/%m/%Y")],
+                [PARAM_LIMITE_GASTOS,     str(lim_g_in), vig_pct.strftime("%d/%m/%Y")],
+                [PARAM_LIMITE_PARCELADOS, str(lim_p_in), vig_pct.strftime("%d/%m/%Y")],
             ])
-            st.success(
-                f"✅ Salvos — Renda: R$ {nova_renda:,.2f} "
+            st.session_state._param_msg = (
+                "success",
+                f"✅ Salvos — Renda: R$ {renda_in:,.2f} "
                 f"(vigência {NOMES_MESES[vig_renda.month-1]}/{vig_renda.year}) · "
-                f"Gastos: {novo_lim_gastos:.1f}% · Parcelados: {novo_lim_parcel:.1f}%"
+                f"Gastos: {lim_g_in:.1f}% · Parcelados: {lim_p_in:.1f}%",
             )
         except Exception as e:
-            st.error(f"❌ Erro ao salvar: {e}")
+            st.session_state._param_msg = ("error", f"❌ Erro ao salvar: {e}")
+
+    if "_param_msg" in st.session_state:
+        kind, msg = st.session_state._param_msg
+        if kind == "success":
+            st.success(msg)
+        else:
+            st.error(msg)
 
     st.divider()
     st.caption("**Valores vigentes neste mês**")
