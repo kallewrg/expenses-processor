@@ -485,8 +485,6 @@ if "classificando_id" not in st.session_state:
     st.session_state.classificando_id = None
 if "ausentes_ignoradas" not in st.session_state:
     st.session_state.ausentes_ignoradas = set()
-if "param_save_feedback" not in st.session_state:
-    st.session_state.param_save_feedback = None  # {"type": "success"|"error", "msg": str}
 
 col_title, col_version = st.columns([5, 1])
 with col_title:
@@ -519,14 +517,6 @@ label_assinaturas = f"🔔 Assinaturas ({alertas_total})" if alertas_total else 
 # ── Parâmetros — fora das tabs para evitar bug do st.form/st.button dentro de st.tabs ──
 with st.expander("⚙️ Parâmetros financeiros", expanded=False):
 
-    if st.session_state.param_save_feedback:
-        fb = st.session_state.param_save_feedback
-        st.session_state.param_save_feedback = None
-        if fb["type"] == "success":
-            st.success(fb["msg"])
-        else:
-            st.error(fb["msg"])
-
     hoje_param = date.today()
     renda_atual        = get_valor_parametro(parametros, PARAM_RENDA,             hoje_param.year, hoje_param.month)
     lim_gastos_atual   = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS,     hoje_param.year, hoje_param.month)
@@ -556,15 +546,11 @@ with st.expander("⚙️ Parâmetros financeiros", expanded=False):
             salvar_parametro(PARAM_RENDA,             nova_renda,      vig_renda)
             salvar_parametro(PARAM_LIMITE_GASTOS,     novo_lim_gastos, vig_pct)
             salvar_parametro(PARAM_LIMITE_PARCELADOS, novo_lim_parcel, vig_pct)
-            st.session_state.param_save_feedback = {
-                "type": "success",
-                "msg": (
-                    f"✅ Salvos — Renda: R$ {nova_renda:,.2f} "
-                    f"(vigência {NOMES_MESES[vig_renda.month-1]}/{vig_renda.year}) · "
-                    f"Gastos: {novo_lim_gastos:.1f}% · Parcelados: {novo_lim_parcel:.1f}%"
-                ),
-            }
-            st.rerun()
+            st.success(
+                f"✅ Salvos — Renda: R$ {nova_renda:,.2f} "
+                f"(vigência {NOMES_MESES[vig_renda.month-1]}/{vig_renda.year}) · "
+                f"Gastos: {novo_lim_gastos:.1f}% · Parcelados: {novo_lim_parcel:.1f}%"
+            )
         except Exception as e:
             st.error(f"❌ Erro ao salvar: {e}")
 
