@@ -1,15 +1,23 @@
 import os
-import json
 import base64
 import hashlib
 import calendar
 import requests
-import gspread
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import date, timedelta
-from google.oauth2.service_account import Credentials
 from collections import defaultdict
+from shared_data import (
+    NOMES_MESES,
+    PARAM_RENDA,
+    PARAM_LIMITE_GASTOS,
+    PARAM_LIMITE_PARCELADOS,
+    carregar_planilha_completa,
+    salvar_assinatura,
+    salvar_parametros,
+    atualizar_assinatura,
+    get_valor_parametro,
+)
 
 # ─── Configuração da página ──────────────────────────────────────────────────
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
@@ -18,76 +26,14 @@ st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wid
 APP_VERSION = "1.9.13"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-NOMES_MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-               "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-
 # Nomes exatos das colunas na planilha de lançamentos
 COL_DATA      = "Data da compra"
 COL_DESCRICAO = "Descrição do gasto"
 COL_VALOR     = "Valor do gasto/parcela"
 COL_PARCELAS  = "Quantidade de parcelas [Parcelas]"
 
-# Aba e colunas de assinaturas (mesma ordem das colunas no GSheets)
-ABA_ASSINATURAS = "Assinaturas"
-COLUNAS_ASSINATURAS = [
-    "id", "descricao", "valor", "dia_do_mes", "periodicidade_meses",
-    "status", "data_inicio", "data_ultimo_lancamento", "data_cancelamento",
-]
-
-# Aba e nomes de parâmetros
-ABA_PARAMETROS = "Parametros"
-PARAM_RENDA            = "renda_mensal_liquida"
-PARAM_LIMITE_GASTOS    = "limite_gastos_pct"
-PARAM_LIMITE_PARCELADOS = "limite_parcelados_pct"
-
-
-# ─── Google Sheets ───────────────────────────────────────────────────────────
-@st.cache_resource
-def get_gspread_client():
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    if not creds_json:
-        st.error("Variável de ambiente GOOGLE_CREDENTIALS não configurada.")
-        st.stop()
-    creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    return gspread.authorize(creds)
-
-
-@st.cache_resource
-def _get_planilha():
-    """
-    Abre a planilha e armazena o objeto por toda a sessão (cache_resource).
-    Evita chamar open_by_key() a cada operação de escrita.
-    """
-    client = get_gspread_client()
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
-    if not sheet_id:
-        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
-        st.stop()
-    return client.open_by_key(sheet_id)
-
-
 def _carregar_planilha_completa() -> tuple[list, list, list]:
-    """
-    Lê as três abas sempre com dados frescos do Sheets.
-    Sem cache de dados — a conexão (_get_planilha) é cacheada,
-    mas os dados são sempre lidos diretamente.
-    """
-    planilha = _get_planilha()
-    lancamentos = planilha.sheet1.get_all_records(numericise_ignore=['all'])
-    try:
-        assinaturas = planilha.worksheet(ABA_ASSINATURAS).get_all_records(numericise_ignore=['all'])
-    except Exception:
-        assinaturas = []
-    try:
-        parametros = planilha.worksheet(ABA_PARAMETROS).get_all_records(numericise_ignore=['all'])
-    except Exception:
-        parametros = []
-    return lancamentos, assinaturas, parametros
+    return carregar_planilha_completa()
 
 
 def carregar_dados() -> list:
@@ -108,73 +54,6 @@ def gerar_id_assinatura(descricao: str, valor: str, dia_do_mes: int) -> str:
     return hashlib.sha1(chave.encode()).hexdigest()[:12]
 
 
-def salvar_assinatura(assinatura: dict) -> None:
-    """Adiciona uma nova assinatura na aba."""
-    ws = _get_planilha().worksheet(ABA_ASSINATURAS)
-    linha = [assinatura.get(col, "") for col in COLUNAS_ASSINATURAS]
-    ws.append_row(linha, value_input_option="USER_ENTERED")
-
-
-def salvar_parametros(linhas: list[list]) -> None:
-    """
-    Grava múltiplas linhas na aba Parametros em uma única chamada à API.
-    Cada item de `linhas` deve ser [parametro, str(valor), "dd/mm/yyyy"].
-    """
-    ws = _get_planilha().worksheet(ABA_PARAMETROS)
-    ws.append_rows(linhas, value_input_option="USER_ENTERED")
-
-
-def get_valor_parametro(
-    parametros: list[dict],
-    tipo: str,
-    ano: int,
-    mes: int,
-) -> float | None:
-    """
-    Retorna o valor mais recente do parâmetro `tipo` que seja vigente em (ano, mes).
-    "Vigente" = data_vigencia <= primeiro dia de (ano, mes).
-    Retorna None se não houver nenhum registro aplicável.
-    """
-    primeiro_dia_mes = date(ano, mes, 1)
-    melhor_valor     = None
-    melhor_data      = None
-
-    for linha in parametros:
-        if str(linha.get("parametro", "")).strip() != tipo:
-            continue
-        data_str = str(linha.get("data_vigencia", "")).strip()
-        try:
-            p = data_str.split("/")
-            data_vig = date(int(p[2]), int(p[1]), int(p[0]))
-        except (ValueError, IndexError):
-            continue
-        if data_vig <= primeiro_dia_mes:
-            if melhor_data is None or data_vig > melhor_data:
-                melhor_data  = data_vig
-                melhor_valor = parse_valor(linha.get("valor", "0"))
-
-    return melhor_valor
-
-
-def atualizar_assinatura(id_assinatura: str, campos: dict) -> None:
-    """
-    Atualiza campos específicos de uma assinatura buscando pelo ID.
-    `campos` é um dict {nome_coluna: novo_valor}.
-    Lança ValueError se o ID não for encontrado.
-    """
-    ws = _get_planilha().worksheet(ABA_ASSINATURAS)
-    registros = ws.get_all_records(numericise_ignore=['all'])
-
-    for idx, linha in enumerate(registros):
-        if str(linha.get("id", "")) == id_assinatura:
-            row_num = idx + 2  # linha 1 = cabeçalho; idx é 0-based
-            for campo, valor in campos.items():
-                if campo in COLUNAS_ASSINATURAS:
-                    col_num = COLUNAS_ASSINATURAS.index(campo) + 1
-                    ws.update_cell(row_num, col_num, valor)
-            return
-
-    raise ValueError(f"Assinatura com id '{id_assinatura}' não encontrada.")
 
 
 # ─── Lógica de negócio ───────────────────────────────────────────────────────
@@ -511,99 +390,8 @@ ausentes           = [
 alertas_total = len(candidatos) + len(ausentes)
 label_assinaturas = f"🔔 Assinaturas ({alertas_total})" if alertas_total else "🔔 Assinaturas"
 
-# ── Parâmetros — fora das tabs para evitar bug do st.form/st.button dentro de st.tabs ──
-# Inicializar session_state só quando a chave não existe. Passar `value=renda_atual`
-# (etc.) em todo rerun faz o Streamlit reconciliar o number_input com o servidor e pode
-# descartar o que foi digitado no primeiro submit — a planilha não reflete a edição.
-
-hoje_param = date.today()
-renda_atual = get_valor_parametro(parametros, PARAM_RENDA, hoje_param.year, hoje_param.month)
-lim_gastos_atual = get_valor_parametro(parametros, PARAM_LIMITE_GASTOS, hoje_param.year, hoje_param.month)
-lim_parcel_atual = get_valor_parametro(parametros, PARAM_LIMITE_PARCELADOS, hoje_param.year, hoje_param.month)
-
-if "param_form_renda" not in st.session_state:
-    st.session_state.param_form_renda = float(renda_atual or 0.0)
-if "param_form_lim_gastos" not in st.session_state:
-    st.session_state.param_form_lim_gastos = float(lim_gastos_atual or 0.0)
-if "param_form_lim_parcel" not in st.session_state:
-    st.session_state.param_form_lim_parcel = float(lim_parcel_atual or 0.0)
-
-
-st.subheader("⚙️ Parâmetros financeiros")
-
-with st.form("parametros_financeiros"):
-    st.number_input(
-        "💰 Renda mensal líquida (R$)",
-        min_value=0.0,
-        step=100.0,
-        format="%.2f",
-        key="param_form_renda",
-        help="A alteração entra em vigor no mês seguinte.",
-    )
-    st.number_input(
-        "🔴 Limite de gastos (%)",
-        min_value=0.0,
-        max_value=100.0,
-        step=1.0,
-        format="%.1f",
-        key="param_form_lim_gastos",
-    )
-    st.number_input(
-        "🟡 Limite de gastos parcelados (%)",
-        min_value=0.0,
-        max_value=100.0,
-        step=1.0,
-        format="%.1f",
-        key="param_form_lim_parcel",
-    )
-    submitted = st.form_submit_button("💾 Salvar alterações", type="primary")
-
-if submitted:
-    hoje = date.today()
-    proximo_mes = avancar_mes(hoje.year, hoje.month, 1)
-    vig_renda = date(proximo_mes[0], proximo_mes[1], 1)
-    vig_pct = date(hoje.year, hoje.month, 1)
-    renda_val = float(st.session_state["param_form_renda"])
-    lim_g_val = float(st.session_state["param_form_lim_gastos"])
-    lim_p_val = float(st.session_state["param_form_lim_parcel"])
-    try:
-        salvar_parametros([
-            [PARAM_RENDA, str(renda_val), vig_renda.strftime("%d/%m/%Y")],
-            [PARAM_LIMITE_GASTOS, str(lim_g_val), vig_pct.strftime("%d/%m/%Y")],
-            [PARAM_LIMITE_PARCELADOS, str(lim_p_val), vig_pct.strftime("%d/%m/%Y")],
-        ])
-        st.session_state._param_msg = (
-            "success",
-            f"✅ Salvos — Renda: R$ {renda_val:,.2f} "
-            f"(vigência {NOMES_MESES[vig_renda.month-1]}/{vig_renda.year}) · "
-            f"Gastos: {lim_g_val:.1f}% · Parcelados: {lim_p_val:.1f}%",
-        )
-    except Exception as e:
-        st.session_state._param_msg = ("error", f"❌ Erro ao salvar: {e}")
-
-if "_param_msg" in st.session_state:
-    kind, msg = st.session_state._param_msg
-    if kind == "success":
-        st.success(msg)
-    else:
-        st.error(msg)
-
 st.divider()
-st.caption("**Valores vigentes neste mês**")
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Renda líquida", f"R$ {renda_atual:,.2f}" if renda_atual is not None else "—")
-with col2:
-    if lim_gastos_atual is not None and renda_atual is not None:
-        st.metric("Limite de gastos", f"{lim_gastos_atual:.1f}%  (R$ {renda_atual*lim_gastos_atual/100:,.2f})")
-    else:
-        st.metric("Limite de gastos", "—")
-with col3:
-    if lim_parcel_atual is not None and renda_atual is not None:
-        st.metric("Limite parcelados", f"{lim_parcel_atual:.1f}%  (R$ {renda_atual*lim_parcel_atual/100:,.2f})")
-    else:
-        st.metric("Limite parcelados", "—")
-
+st.info("Configure renda e limites na página **Parâmetros Financeiros** no menu lateral.")
 st.divider()
 
 aba_grafico, aba_assinaturas, aba_upload = st.tabs(
