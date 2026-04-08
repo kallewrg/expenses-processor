@@ -2,40 +2,22 @@ import os
 import base64
 import hashlib
 import calendar
-import importlib.util
-from pathlib import Path
 import requests
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import date, timedelta
 from collections import defaultdict
-try:
-    from shared_data import (
-        NOMES_MESES,
-        PARAM_RENDA,
-        PARAM_LIMITE_GASTOS,
-        PARAM_LIMITE_PARCELADOS,
-        carregar_planilha_completa,
-        salvar_assinatura,
-        salvar_parametros,
-        atualizar_assinatura,
-        get_valor_parametro,
-    )
-except ModuleNotFoundError:
-    module_path = Path(__file__).resolve().parent / "shared_data.py"
-    spec = importlib.util.spec_from_file_location("shared_data_fallback", module_path)
-    shared_data_fallback = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(shared_data_fallback)
-    NOMES_MESES = shared_data_fallback.NOMES_MESES
-    PARAM_RENDA = shared_data_fallback.PARAM_RENDA
-    PARAM_LIMITE_GASTOS = shared_data_fallback.PARAM_LIMITE_GASTOS
-    PARAM_LIMITE_PARCELADOS = shared_data_fallback.PARAM_LIMITE_PARCELADOS
-    carregar_planilha_completa = shared_data_fallback.carregar_planilha_completa
-    salvar_assinatura = shared_data_fallback.salvar_assinatura
-    salvar_parametros = shared_data_fallback.salvar_parametros
-    atualizar_assinatura = shared_data_fallback.atualizar_assinatura
-    get_valor_parametro = shared_data_fallback.get_valor_parametro
+from pages.shared_data import (
+    NOMES_MESES,
+    PARAM_RENDA,
+    PARAM_LIMITE_GASTOS,
+    PARAM_LIMITE_PARCELADOS,
+    carregar_planilha_completa,
+    salvar_assinatura,
+    salvar_parametros,
+    atualizar_assinatura,
+    get_valor_parametro,
+)
 
 # ─── Configuração da página ──────────────────────────────────────────────────
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
