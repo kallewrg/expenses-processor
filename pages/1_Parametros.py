@@ -1,23 +1,32 @@
-import sys
-from pathlib import Path
+import importlib.util
 from datetime import date
 
 import streamlit as st
 
-# Garante import de módulos no diretório raiz do app em ambientes de deploy.
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
-from shared_data import (
-    NOMES_MESES,
-    PARAM_RENDA,
-    PARAM_LIMITE_GASTOS,
-    PARAM_LIMITE_PARCELADOS,
-    carregar_planilha_completa,
-    get_valor_parametro,
-    salvar_parametros,
-)
+try:
+    from shared_data import (
+        NOMES_MESES,
+        PARAM_RENDA,
+        PARAM_LIMITE_GASTOS,
+        PARAM_LIMITE_PARCELADOS,
+        carregar_planilha_completa,
+        get_valor_parametro,
+        salvar_parametros,
+    )
+except ModuleNotFoundError:
+    from pathlib import Path
+    module_path = Path(__file__).resolve().parents[1] / "shared_data.py"
+    spec = importlib.util.spec_from_file_location("shared_data_fallback", module_path)
+    shared_data_fallback = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(shared_data_fallback)
+    NOMES_MESES = shared_data_fallback.NOMES_MESES
+    PARAM_RENDA = shared_data_fallback.PARAM_RENDA
+    PARAM_LIMITE_GASTOS = shared_data_fallback.PARAM_LIMITE_GASTOS
+    PARAM_LIMITE_PARCELADOS = shared_data_fallback.PARAM_LIMITE_PARCELADOS
+    carregar_planilha_completa = shared_data_fallback.carregar_planilha_completa
+    get_valor_parametro = shared_data_fallback.get_valor_parametro
+    salvar_parametros = shared_data_fallback.salvar_parametros
 
 
 def avancar_mes(ano: int, mes: int, quantidade: int) -> tuple[int, int]:
