@@ -1,23 +1,15 @@
 import os
+import json
 import base64
 import hashlib
 import calendar
 import requests
+import gspread
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import date, timedelta
 from collections import defaultdict
-from pages.shared_data import (
-    NOMES_MESES,
-    PARAM_RENDA,
-    PARAM_LIMITE_GASTOS,
-    PARAM_LIMITE_PARCELADOS,
-    carregar_planilha_completa,
-    salvar_assinatura,
-    salvar_parametros,
-    atualizar_assinatura,
-    get_valor_parametro,
-)
+from google.oauth2.service_account import Credentials
 
 # ─── Configuração da página ──────────────────────────────────────────────────
 st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wide")
@@ -26,14 +18,62 @@ st.set_page_config(page_title="Gestão de Fatura", page_icon="💳", layout="wid
 APP_VERSION = "1.9.13"
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+NOMES_MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+               "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+
 # Nomes exatos das colunas na planilha de lançamentos
 COL_DATA      = "Data da compra"
 COL_DESCRICAO = "Descrição do gasto"
 COL_VALOR     = "Valor do gasto/parcela"
 COL_PARCELAS  = "Quantidade de parcelas [Parcelas]"
 
+ABA_ASSINATURAS = "Assinaturas"
+COLUNAS_ASSINATURAS = [
+    "id", "descricao", "valor", "dia_do_mes", "periodicidade_meses",
+    "status", "data_inicio", "data_ultimo_lancamento", "data_cancelamento",
+]
+ABA_PARAMETROS = "Parametros"
+PARAM_RENDA = "renda_mensal_liquida"
+PARAM_LIMITE_GASTOS = "limite_gastos_pct"
+PARAM_LIMITE_PARCELADOS = "limite_parcelados_pct"
+
+
+@st.cache_resource
+def get_gspread_client():
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if not creds_json:
+        st.error("Variável de ambiente GOOGLE_CREDENTIALS não configurada.")
+        st.stop()
+    creds_dict = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+
+@st.cache_resource
+def _get_planilha():
+    client = get_gspread_client()
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
+        st.stop()
+    return client.open_by_key(sheet_id)
+
 def _carregar_planilha_completa() -> tuple[list, list, list]:
-    return carregar_planilha_completa()
+    planilha = _get_planilha()
+    lancamentos = planilha.sheet1.get_all_records(numericise_ignore=["all"])
+    try:
+        assinaturas = planilha.worksheet(ABA_ASSINATURAS).get_all_records(numericise_ignore=["all"])
+    except Exception:
+        assinaturas = []
+    try:
+        parametros = planilha.worksheet(ABA_PARAMETROS).get_all_records(numericise_ignore=["all"])
+    except Exception:
+        parametros = []
+    return lancamentos, assinaturas, parametros
 
 
 def carregar_dados() -> list:
@@ -52,6 +92,51 @@ def gerar_id_assinatura(descricao: str, valor: str, dia_do_mes: int) -> str:
     """Gera ID estável de 12 chars: sha1(descricao|valor|dia)."""
     chave = f"{descricao.strip().lower()}|{str(valor).strip()}|{dia_do_mes}"
     return hashlib.sha1(chave.encode()).hexdigest()[:12]
+
+
+def salvar_assinatura(assinatura: dict) -> None:
+    ws = _get_planilha().worksheet(ABA_ASSINATURAS)
+    linha = [assinatura.get(col, "") for col in COLUNAS_ASSINATURAS]
+    ws.append_row(linha, value_input_option="USER_ENTERED")
+
+
+def atualizar_assinatura(id_assinatura: str, campos: dict) -> None:
+    ws = _get_planilha().worksheet(ABA_ASSINATURAS)
+    registros = ws.get_all_records(numericise_ignore=["all"])
+    for idx, linha in enumerate(registros):
+        if str(linha.get("id", "")) == id_assinatura:
+            row_num = idx + 2
+            for campo, valor in campos.items():
+                if campo in COLUNAS_ASSINATURAS:
+                    col_num = COLUNAS_ASSINATURAS.index(campo) + 1
+                    ws.update_cell(row_num, col_num, valor)
+            return
+    raise ValueError(f"Assinatura com id '{id_assinatura}' não encontrada.")
+
+
+def salvar_parametros(linhas: list[list]) -> None:
+    ws = _get_planilha().worksheet(ABA_PARAMETROS)
+    ws.append_rows(linhas, value_input_option="USER_ENTERED")
+
+
+def get_valor_parametro(parametros: list[dict], tipo: str, ano: int, mes: int) -> float | None:
+    primeiro_dia_mes = date(ano, mes, 1)
+    melhor_valor = None
+    melhor_data = None
+    for linha in parametros:
+        if str(linha.get("parametro", "")).strip() != tipo:
+            continue
+        data_str = str(linha.get("data_vigencia", "")).strip()
+        try:
+            p = data_str.split("/")
+            data_vig = date(int(p[2]), int(p[1]), int(p[0]))
+        except (ValueError, IndexError):
+            continue
+        if data_vig <= primeiro_dia_mes:
+            if melhor_data is None or data_vig > melhor_data:
+                melhor_data = data_vig
+                melhor_valor = parse_valor(linha.get("valor", "0"))
+    return melhor_valor
 
 
 
