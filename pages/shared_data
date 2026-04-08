@@ -1,0 +1,120 @@
+import json
+import os
+from datetime import date
+
+import gspread
+import streamlit as st
+from google.oauth2.service_account import Credentials
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+NOMES_MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+               "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+
+ABA_ASSINATURAS = "Assinaturas"
+COLUNAS_ASSINATURAS = [
+    "id", "descricao", "valor", "dia_do_mes", "periodicidade_meses",
+    "status", "data_inicio", "data_ultimo_lancamento", "data_cancelamento",
+]
+
+ABA_PARAMETROS = "Parametros"
+PARAM_RENDA = "renda_mensal_liquida"
+PARAM_LIMITE_GASTOS = "limite_gastos_pct"
+PARAM_LIMITE_PARCELADOS = "limite_parcelados_pct"
+
+
+def parse_valor(valor_str) -> float:
+    if isinstance(valor_str, (int, float)):
+        return float(valor_str)
+    try:
+        cleaned = str(valor_str).replace("R$", "").replace(" ", "").strip()
+        if "," in cleaned:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+@st.cache_resource
+def get_gspread_client():
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if not creds_json:
+        st.error("Variável de ambiente GOOGLE_CREDENTIALS não configurada.")
+        st.stop()
+    creds_dict = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+
+@st.cache_resource
+def get_planilha():
+    client = get_gspread_client()
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        st.error("Variável de ambiente GOOGLE_SHEET_ID não configurada.")
+        st.stop()
+    return client.open_by_key(sheet_id)
+
+
+def carregar_planilha_completa() -> tuple[list, list, list]:
+    planilha = get_planilha()
+    lancamentos = planilha.sheet1.get_all_records(numericise_ignore=["all"])
+    try:
+        assinaturas = planilha.worksheet(ABA_ASSINATURAS).get_all_records(numericise_ignore=["all"])
+    except Exception:
+        assinaturas = []
+    try:
+        parametros = planilha.worksheet(ABA_PARAMETROS).get_all_records(numericise_ignore=["all"])
+    except Exception:
+        parametros = []
+    return lancamentos, assinaturas, parametros
+
+
+def salvar_assinatura(assinatura: dict) -> None:
+    ws = get_planilha().worksheet(ABA_ASSINATURAS)
+    linha = [assinatura.get(col, "") for col in COLUNAS_ASSINATURAS]
+    ws.append_row(linha, value_input_option="USER_ENTERED")
+
+
+def atualizar_assinatura(id_assinatura: str, campos: dict) -> None:
+    ws = get_planilha().worksheet(ABA_ASSINATURAS)
+    registros = ws.get_all_records(numericise_ignore=["all"])
+    for idx, linha in enumerate(registros):
+        if str(linha.get("id", "")) == id_assinatura:
+            row_num = idx + 2
+            for campo, valor in campos.items():
+                if campo in COLUNAS_ASSINATURAS:
+                    col_num = COLUNAS_ASSINATURAS.index(campo) + 1
+                    ws.update_cell(row_num, col_num, valor)
+            return
+    raise ValueError(f"Assinatura com id '{id_assinatura}' não encontrada.")
+
+
+def salvar_parametros(linhas: list[list]) -> None:
+    ws = get_planilha().worksheet(ABA_PARAMETROS)
+    ws.append_rows(linhas, value_input_option="USER_ENTERED")
+
+
+def get_valor_parametro(parametros: list[dict], tipo: str, ano: int, mes: int) -> float | None:
+    primeiro_dia_mes = date(ano, mes, 1)
+    melhor_valor = None
+    melhor_data = None
+
+    for linha in parametros:
+        if str(linha.get("parametro", "")).strip() != tipo:
+            continue
+        data_str = str(linha.get("data_vigencia", "")).strip()
+        try:
+            p = data_str.split("/")
+            data_vig = date(int(p[2]), int(p[1]), int(p[0]))
+        except (ValueError, IndexError):
+            continue
+        if data_vig <= primeiro_dia_mes:
+            if melhor_data is None or data_vig > melhor_data:
+                melhor_data = data_vig
+                melhor_valor = parse_valor(linha.get("valor", "0"))
+
+    return melhor_valor
